@@ -1,0 +1,6 @@
+*.o
+ravager
+tuner
+training*.txt
+*.pgn
+gmon.out
