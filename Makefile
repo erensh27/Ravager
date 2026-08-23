@@ -1,5 +1,5 @@
-# Ravager 2.0 — Makefile
-# Pure HCE chess engine. No NNUE, no books, no tablebases.
+# Ravager 2 — Makefile
+# HCE + NNUE evaluation, Syzygy tablebases via Pyrrhic.
 
 CC       ?= gcc
 CFLAGS   ?= -O3 -std=c11
@@ -17,8 +17,24 @@ ifeq ($(UNAME_S),Linux)
   endif
 endif
 
+# --- NNUE -----------------------------------------------------------------
+# Default build embeds the bundled Leorik-format net into the binary via
+# incbin, making ./ravager fully self-contained (~5 MB). Load a different
+# net with 'make EVALFILE=path/to/net.nnue', or build an HCE-only binary
+# with 'make EVALFILE='.
+EVALFILE ?= nets/640HL-S-5io8-6116M-FRCv1.nnue
+
+ifneq ($(EVALFILE),)
+  ifeq (,$(wildcard $(EVALFILE)))
+    $(error NNUE net not found at '$(EVALFILE)' — run 'make net' to fetch it, or build HCE-only with 'make EVALFILE=')
+  endif
+  CFLAGS += -DEVALFILE=\"$(EVALFILE)\"
+endif
+
 SRC := src/bitboard.c src/board.c src/movegen.c src/see.c src/evaluate.c src/params.c \
-       src/tt.c src/search.c src/uci.c
+       src/tt.c src/search.c src/nnue.c \
+       src/tb/tbprobe.c src/tb_syzygy.c \
+       src/uci.c
 OBJ := $(SRC:.c=.o)
 
 TARGET := ravager
@@ -32,7 +48,7 @@ $(TARGET): $(OBJ)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 # Windows cross-build
-ravager.exe: $(SRC) $(wildcard src/*.h)
+ravager.exe: $(SRC) $(wildcard src/*.h) $(wildcard src/tb/*.h)
 	x86_64-w64-mingw32-gcc $(CFLAGS) -o $@ $(SRC) $(LDLIBS) -static
 
 debug: CFLAGS += -O0 -g -fsanitize=address,undefined
@@ -49,7 +65,14 @@ test: $(TARGET)
 bench: $(TARGET)
 	./$(TARGET) bench
 
+# Fetch the default net (only needed if nets/ was not cloned with the repo)
+NET_URL := https://raw.githubusercontent.com/lithander/Leorik/master/Leorik.Core/640HL-S-5io8-6116M-FRCv1.nnue
+net:
+	@mkdir -p nets
+	curl -sL "$(NET_URL)" -o $(EVALFILE)
+	@echo "Downloaded $(EVALFILE)"
+
 clean:
 	rm -f $(OBJ) $(TARGET) ravager.exe tuner
 
-.PHONY: all clean test bench debug
+.PHONY: all clean test bench debug tuner net

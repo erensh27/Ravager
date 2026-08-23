@@ -4,3 +4,4 @@ tuner
 training*.txt
 *.pgn
 gmon.out
+data_quiet.epd

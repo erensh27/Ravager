@@ -1,6 +1,6 @@
 /*
  * ravager.h — Ravager 2.0 — shared types & constants
- * Pure handcrafted-evaluation chess engine. No NNUE, no books, no tablebases.
+ * HCE + NNUE evaluation, Syzygy tablebases.
  */
 
 #ifndef RAVAGER_H
@@ -15,7 +15,7 @@
 #include <time.h>
 
 #define ENGINE_NAME    "Ravager"
-#define ENGINE_VERSION "1"
+#define ENGINE_VERSION "2"
 #define ENGINE_AUTHOR  "Ravager Dev"
 
 /* Colours */

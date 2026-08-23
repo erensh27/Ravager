@@ -91,3 +91,29 @@ and to **Rasmus Althoff** (CT800) and **John Bergbom** (Amundsen) for their engi
 
 If any attribution above is inaccurate, please open an issue on the repository
 and it will be corrected.
+
+---
+
+# Ravager 2 additions
+
+Third-party code and data used by Ravager 2 (all permissively licensed):
+
+- **Pyrrhic** by basil, Jon Dart and Andrew Grant — Syzygy tablebase probing
+  (WDL during search, DTZ at the root). Vendored under `src/tb/`, MIT licence
+  in `tb/LICENSE`. https://github.com/AndyGrant/Pyrrhic
+- **incbin.h** by Dale Weister (graphitemaster) — compile-time embedding of
+  NNUE nets. Public domain / unlicense-style header.
+  https://github.com/graphitemaster/incbin
+- **Leorik** by Thomas Jahn (lithander) — the bundled `nets/*.nnue` files come
+  from Leorik's public releases; Ravager 2 implements Leorik's bucketed
+  SCReLU net format natively (verified score-for-score against an independent
+  implementation). MIT. https://github.com/lithander/Leorik
+- **Zurichess quiet-labeled dataset** by Alexandru Moșoi — 725k quiet,
+  resolved positions (`data_quiet.epd`) used for texel tuning; the same set
+  behind many classic HCE tunings (Ethereal, Rofchade, PeSTO ...).
+  https://bitbucket.org/zurichess/tuner (mirrored on GitHub)
+- **Ronald de Man** — creator of the Syzygy tablebase format itself.
+
+The NNUE integration follows the standard accumulator design popularised by
+Stockfish NNUE (Yu Nasu, Nasu; and the Stockfish team) and documented for
+small C engines in Berserk (Jay Honnold), Leorik, and Marvin.

@@ -15,6 +15,8 @@
 #include "bitboard.h"
 #include "tt.h"
 #include "search.h"
+#include "nnue.h"
+#include "tb_syzygy.h"
 
 volatile int search_soft_ms  = 1000;
 volatile int search_hard_ms  = 5000;
@@ -224,7 +226,7 @@ static bool is_dead_draw(const Board *b) {
 /* ---- Quiescence ---- */
 static int quiescence(Board *b, int alpha, int beta, int ply) {
     if (abort_search) return 0;
-    if (ply >= MAX_PLY - 1) return evaluate(b);
+    if (ply >= MAX_PLY - 1) return nnue_eval(b);
 
     search_nodes++;
     if (ply > seldepth) seldepth = ply;
@@ -237,7 +239,7 @@ static int quiescence(Board *b, int alpha, int beta, int ply) {
     if (!in_check) {
         Move qtt_move = NO_MOVE;
 
-        int stand_pat = evaluate(b);
+        int stand_pat = nnue_eval(b);
         if (stand_pat >= beta) return beta;
         if (stand_pat > alpha) alpha = stand_pat;
         if (stand_pat < alpha - 1000) return alpha;   /* delta pruning */
@@ -250,6 +252,7 @@ static int quiescence(Board *b, int alpha, int beta, int ply) {
             Move m = pick_next_move(&caps, i);
             /* skip clearly losing captures */
             if (!move_is_promo(m) && see_move(b, m) < -50) continue;
+            nnue_push_move(b, m);
             make_move(b, m);
             if (is_in_check(b, mover)) { unmake_move(b, m); continue; }
             int score = -quiescence(b, -beta, -alpha, ply + 1);
@@ -268,6 +271,7 @@ static int quiescence(Board *b, int alpha, int beta, int ply) {
     score_moves(b, &moves, NO_MOVE, ply, NO_MOVE);
     for (int i = 0; i < moves.count; i++) {
         Move m = pick_next_move(&moves, i);
+        nnue_push_move(b, m);
         make_move(b, m);
         int score = -quiescence(b, -beta, -alpha, ply + 1);
         unmake_move(b, m);
@@ -285,7 +289,7 @@ static int quiescence(Board *b, int alpha, int beta, int ply) {
 static int pvs(Board *b, int alpha, int beta, int depth, int ply, bool is_pv,
                Move prev_move, bool null_ok, Move excluded) {
     if (abort_search) return 0;
-    if (ply >= MAX_PLY - 1) return evaluate(b);
+    if (ply >= MAX_PLY - 1) return nnue_eval(b);
 
     bool in_check = is_in_check(b, b->side);
     if (in_check && depth < MAX_PLY - 3) {
@@ -309,6 +313,10 @@ static int pvs(Board *b, int alpha, int beta, int depth, int ply, bool is_pv,
         int mate_beta  = beta  <  MATE_SCORE - ply - 1 ? beta : MATE_SCORE - ply - 1;
         if (mate_alpha >= mate_beta) return mate_alpha;
         alpha = mate_alpha; beta = mate_beta;
+
+        /* Syzygy WDL: exact result known, no search needed */
+        int tb_score;
+        if (syzygy_probe_wdl(b, ply, &tb_score)) return tb_score;
     }
 
     bool root = (ply == 0);
@@ -330,7 +338,7 @@ static int pvs(Board *b, int alpha, int beta, int depth, int ply, bool is_pv,
     /* Internal iterative reduction: no TT move at decent depth (PV included) */
     if (!tt_hit && depth >= 4 && !root) depth -= 1;
 
-    int static_eval = in_check ? -INFINITY_SCORE : evaluate(b);
+    int static_eval = in_check ? -INFINITY_SCORE : nnue_eval(b);
     if (!in_check) eval_stack[ply] = static_eval;
     else eval_stack[ply] = -INFINITY_SCORE;
     /* improving: our eval is better than two plies ago (same side to move) */
@@ -361,6 +369,7 @@ static int pvs(Board *b, int alpha, int beta, int depth, int ply, bool is_pv,
             if (static_eval - beta > 200) R++;
             cm_piece[ply + 1] = -1;                 /* no continuation after null */
             eval_stack[ply + 1] = -INFINITY_SCORE;
+            nnue_push_null(b);
             make_null_move(b);
             int null_score = -pvs(b, -beta, -beta + 1, depth - 1 - R, ply + 1, false, NO_MOVE, false, NO_MOVE);
             unmake_null_move(b);
@@ -387,6 +396,7 @@ static int pvs(Board *b, int alpha, int beta, int depth, int ply, bool is_pv,
             Move m = pick_next_move(&caps, i);
             if (see_move(b, m) < 120) continue;
             int mp = b->piece_on[move_from(m)] % 6;
+            nnue_push_move(b, m);
             make_move(b, m);
             if (is_in_check(b, b->side ^ 1)) { unmake_move(b, m); continue; }  /* illegal */
             if (is_in_check(b, b->side))     { unmake_move(b, m); continue; }  /* gives check: skip */
@@ -455,6 +465,7 @@ static int pvs(Board *b, int alpha, int beta, int depth, int ply, bool is_pv,
         }
 
         int mp = b->piece_on[move_from(m)] % 6;
+        nnue_push_move(b, m);
         make_move(b, m);
         if (is_in_check(b, b->side ^ 1)) {   /* mover left its own king in check */
             unmake_move(b, m);
@@ -575,6 +586,8 @@ void search_iterative_deepening(Board *b) {
     search_nodes = 0;
     seldepth = 0;
     cm_piece[0] = -1;
+    syzygy_hits = 0;
+    nnue_prepare_search(b);
 
     clock_gettime(CLOCK_MONOTONIC, &search_start_ts);
     age_history_tables();
@@ -604,15 +617,18 @@ void search_iterative_deepening(Board *b) {
 
         if (search_verbose && score >= MATE_BOUND) {
             int mate_in = (MATE_SCORE - score + 1) / 2;
-            printf("info depth %d seldepth %d score mate %d nodes %llu nps %lld time %d hashfull %d pv",
-                   depth, seldepth, mate_in, (unsigned long long)search_nodes, nps, ms, tt_hashfull());
+            printf("info depth %d seldepth %d score mate %d nodes %llu nps %lld time %d hashfull %d tbhits %llu pv",
+                   depth, seldepth, mate_in, (unsigned long long)search_nodes, nps, ms, tt_hashfull(),
+                   (unsigned long long)syzygy_hits);
         } else if (search_verbose && score <= -MATE_BOUND) {
             int mate_in = -(MATE_SCORE + score + 1) / 2;
-            printf("info depth %d seldepth %d score mate %d nodes %llu nps %lld time %d hashfull %d pv",
-                   depth, seldepth, mate_in, (unsigned long long)search_nodes, nps, ms, tt_hashfull());
+            printf("info depth %d seldepth %d score mate %d nodes %llu nps %lld time %d hashfull %d tbhits %llu pv",
+                   depth, seldepth, mate_in, (unsigned long long)search_nodes, nps, ms, tt_hashfull(),
+                   (unsigned long long)syzygy_hits);
         } else if (search_verbose) {
-            printf("info depth %d seldepth %d score cp %d nodes %llu nps %lld time %d hashfull %d pv",
-                   depth, seldepth, score, (unsigned long long)search_nodes, nps, ms, tt_hashfull());
+            printf("info depth %d seldepth %d score cp %d nodes %llu nps %lld time %d hashfull %d tbhits %llu pv",
+                   depth, seldepth, score, (unsigned long long)search_nodes, nps, ms, tt_hashfull(),
+                   (unsigned long long)syzygy_hits);
         }
 
         /* PV from TT walk */

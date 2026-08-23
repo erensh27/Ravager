@@ -3,8 +3,11 @@
 #include "bitboard.h"
 #include "tt.h"
 #include "search.h"
+#include "nnue.h"
+#include "tb_syzygy.h"
 
 bool is_insufficient_material(const Board *b);  /* evaluate.c */
+bool nnue_load_embedded(void);                  /* nnue.c     */
 
 int move_overhead_ms = 20;
 
@@ -262,6 +265,17 @@ static void parse_go(const char *line) {
         }
     }
 
+    /* Tablebase root probe: DTZ-optimal move when within range */
+    if (syzygy_available()) {
+        Move tb_move = syzygy_probe_root(&main_board);
+        if (tb_move != NO_MOVE) {
+            printf("info string syzygy root move (DTZ-optimal)\n");
+            printf("bestmove %s\n", move_to_str(tb_move));
+            fflush(stdout);
+            return;
+        }
+    }
+
     search_iterative_deepening(&main_board);
 
     printf("bestmove %s", move_to_str(search_root_best));
@@ -282,12 +296,32 @@ static void print_options(void) {
     printf("option name Hash type spin default %d min 1 max 65536\n", DEFAULT_TT_MB);
     printf("option name MoveOverhead type spin default %d min 0 max 5000\n", move_overhead_ms);
     printf("option name Ponder type check default false\n");
+    printf("option name Use NNUE type check default true\n");
+    printf("option name EvalFile type string default <empty>\n");
+    printf("option name SyzygyPath type string default <empty>\n");
+    printf("option name SyzygyProbeLimit type spin default 6 min 1 max 7\n");
+    printf("option name Syzygy50MoveRule type check default true\n");
     printf("uciok\n");
     fflush(stdout);
 }
 
+/* Extract "name ... value ..." where the value may contain spaces. */
+static bool option_value(const char *line, const char *name, char *out, size_t outsz) {
+    char pat[128];
+    snprintf(pat, sizeof(pat), "setoption name %s value ", name);
+    const char *p = strstr(line, pat);
+    if (!p) return false;
+    p += strlen(pat);
+    while (*p == ' ') p++;
+    snprintf(out, outsz, "%s", p);
+    /* trim trailing whitespace */
+    size_t n = strlen(out);
+    while (n > 0 && (out[n-1] == ' ' || out[n-1] == '\t')) out[--n] = 0;
+    return true;
+}
+
 static void handle_setoption(const char *line) {
-    char value[64];
+    char value[1024];
     if (sscanf(line, "setoption name Hash value %63s", value) == 1) {
         hash_mb = atoi(value);
         if (hash_mb < 1) hash_mb = 1;
@@ -295,6 +329,20 @@ static void handle_setoption(const char *line) {
         tt_alloc(hash_mb);
     } else if (sscanf(line, "setoption name MoveOverhead value %63s", value) == 1) {
         move_overhead_ms = atoi(value);
+    } else if (option_value(line, "EvalFile", value, sizeof(value))) {
+        if (*value && strcmp(value, "<empty>") != 0) nnue_load_file(value);
+        else { nnue_loaded = false; nnue_load_embedded(); }
+    } else if (option_value(line, "SyzygyPath", value, sizeof(value))) {
+        syzygy_init(value);
+    } else if (sscanf(line, "setoption name SyzygyProbeLimit value %63s", value) == 1) {
+        syzygy_probe_limit = atoi(value);
+        if (syzygy_probe_limit < 0) syzygy_probe_limit = 0;
+        if (syzygy_probe_limit > 7) syzygy_probe_limit = 7;
+    } else if (sscanf(line, "setoption name Syzygy50MoveRule value %63s", value) == 1) {
+        syzygy_50move_rule = (strcmp(value, "true") == 0);
+    } else if (strstr(line, "setoption name Use NNUE")) {
+        if (option_value(line, "Use NNUE", value, sizeof(value)))
+            nnue_enabled = (strcmp(value, "true") == 0);
     }
 }
 
@@ -316,7 +364,7 @@ static void print_board(void) {
     printf("    a   b   c   d   e   f   g   h\n");
     printf("Side: %s  Hash: %016llx  Eval: %d\n",
            main_board.side == WHITE ? "white" : "black",
-           (unsigned long long)main_board.hash, evaluate(&main_board));
+           (unsigned long long)main_board.hash, nnue_evaluate_board(&main_board));
     fflush(stdout);
 }
 
@@ -345,6 +393,11 @@ int main(int argc, char *argv[]) {
     init_lmr_table();
     tt_alloc(hash_mb);
     search_reset_tables();
+    nnue_load_embedded();     /* no-op when built without EVALFILE */
+    {
+        const char *env_net = getenv("RAVAGER_EVALFILE");
+        if (env_net && *env_net) nnue_load_file(env_net);
+    }
     parse_fen(&main_board, STARTPOS_FEN);
 
     if (argc > 1 && strcmp(argv[1], "bench") == 0) {

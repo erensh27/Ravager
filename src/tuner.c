@@ -1,12 +1,16 @@
-/* tuner.c — texel tuner (Texel 1.07 method, local-search variant).
+/* tuner.c — texel tuner (Texel method, local-search variant).
  *
  * Minimises E = 1/N * sum (result - sigmoid(eval/K))^2 over the evaluation
  * parameters in params.c. PST entries use a closed-form delta (the tapered
  * score is linear in them); every other parameter is optimised by finite
  * differences. Rewrites params.c with the tuned values.
  *
- * Build: make tuner
- * Run:   ./tuner training.txt src/params.c
+ * Data formats accepted (auto-detected per line):
+ *   EPD   : "<FEN> c9 \"1-0\";"          (Zurichess / lichess-big3 style)
+ *   legacy: "<FEN> <result>"             (ravager datagen output)
+ *
+ * Build: make tuner        (or: make tuner-omp for OpenMP parallel sweeps)
+ * Run:   ./tuner data.epd src/params.c [rounds] [max_positions]
  */
 
 #include <stdio.h>
@@ -19,8 +23,6 @@
 
 void eval_clear_pawn_hash(void);
 
-#define MAX_POS 120000
-
 /* Positions are stored as compact snapshots; each evaluation rebuilds one
  * reusable board (Board carries a large undo stack, so keeping tens of
  * thousands alive is not viable). */
@@ -30,12 +32,12 @@ typedef struct {
     uint8_t side;
 } Snap;
 
-static Snap snaps[MAX_POS];
-static double results[MAX_POS];
-static double evals[MAX_POS];      /* white-POV eval in cp */
-static int    ph_of[MAX_POS];      /* game phase 0..24 */
-static int    n_pos = 0;
-static Board work;                 /* scratch board */
+static Snap   *snaps;
+static double *results;
+static double *evals;      /* white-POV eval in cp */
+static int    *ph_of;      /* game phase 0..24 */
+static int     n_pos = 0;
+static Board work;         /* scratch board */
 
 static double K = 120.0;           /* sigmoid scaling in centipawns */
 
@@ -78,6 +80,111 @@ static double total_error(void) {
         sum += pow(results[i] - sigmoid(evals[i]), 2);
     return sum / n_pos;
 }
+
+/* ---- data loading ------------------------------------------------------ */
+
+static double parse_result_token(const char *s) {
+    if (strstr(s, "1-0"))     return 1.0;
+    if (strstr(s, "0-1"))     return 0.0;
+    if (strstr(s, "1/2"))     return 0.5;
+    return atof(s);            /* legacy numeric form */
+}
+
+static bool add_position(const char *fen, double r) {
+    if (!parse_fen(&work, fen)) return false;
+
+    /* skip positions where static eval is meaningless */
+    if (is_in_check(&work, work.side)) return false;
+
+    Snap *sn = &snaps[n_pos];
+    for (int sq = 0; sq < 64; sq++) {
+        /* piece_on holds colour*6+type on the Board; snapshots keep the
+         * bare piece type (colour rides along in color_on). */
+        if (work.piece_on[sq] == EMPTY_SQUARE) { sn->piece_on[sq] = EMPTY_SQUARE; sn->color_on[sq] = 0; }
+        else { sn->piece_on[sq] = (uint8_t)(work.piece_on[sq] % 6); sn->color_on[sq] = work.color_on[sq]; }
+    }
+    sn->side = (uint8_t)work.side;
+    results[n_pos] = r;
+    ph_of[n_pos] = work.game_phase > 24 ? 24 : work.game_phase;
+    evals[n_pos] = 0;
+    n_pos++;
+    return true;
+}
+
+static void load_data(const char *datafile, int cap) {
+    FILE *f = fopen(datafile, "r");
+    if (!f) { fprintf(stderr, "cannot open %s\n", datafile); exit(1); }
+
+    char line[1024];
+    int skipped = 0;
+    while (fgets(line, sizeof(line), f)) {
+        if (n_pos >= cap) break;
+        /* trim newline */
+        size_t len = strlen(line);
+        while (len && (line[len-1] == '\n' || line[len-1] == '\r')) line[--len] = 0;
+        if (!len) continue;
+
+        char *c9 = strstr(line, "c9 \"");
+        if (c9) {
+            /* EPD: FEN is everything before the c9 tag */
+            *c9 = 0;
+            char res[32];
+            char *q1 = strchr(c9 + 4, '"');
+            if (!q1) { skipped++; continue; }
+            *q1 = 0;
+            snprintf(res, sizeof(res), "%s", c9 + 4);
+            if (!add_position(line, parse_result_token(res))) skipped++;
+        } else {
+            /* legacy: "<FEN> <result>" — result is the last token */
+            char *sp = strrchr(line, ' ');
+            if (!sp) { skipped++; continue; }
+            *sp = 0;
+            if (!add_position(line, parse_result_token(sp + 1))) skipped++;
+        }
+
+        /* static eval for the freshly stored position (white POV) */
+        int i = n_pos - 1;
+        double e = white_eval(i);
+        if (e > 2000 || e < -2000) { n_pos--; skipped++; }   /* hopeless */
+        else evals[i] = e;
+    }
+    fclose(f);
+    fprintf(stderr, "loaded %d positions (%d skipped)\n", n_pos, skipped);
+
+    {
+        const char *dump_path = getenv("RAVAGER_TUNER_DUMP");
+        if (dump_path) {
+            FILE *df = fopen(dump_path, "w");
+            for (int i = 0; i < n_pos; i++)
+                fprintf(df, "%.1f %.6f %d\n", results[i], evals[i], ph_of[i]);
+            fclose(df);
+            fprintf(stderr, "dumped eval/result pairs to %s\n", dump_path);
+        }
+    }
+}
+
+/* ---- golden-section search for K (texel_tuning.md step 4) -------------- */
+
+static double total_error(void);
+
+static double golden_section_K(double lo, double hi, int n_pos_arg, double (*errfn)(double)) {
+    const double phi = (sqrt(5.0) - 1.0) / 2.0;
+    double x1 = hi - phi * (hi - lo);
+    double x2 = lo + phi * (hi - lo);
+    double f1 = errfn(x1), f2 = errfn(x2);
+    for (int it = 0; it < 40 && (hi - lo) > 1e-3; it++) {
+        if (f1 < f2) { hi = x2; x2 = x1; f2 = f1; x1 = hi - phi * (hi - lo); f1 = errfn(x1); }
+        else         { lo = x1; x1 = x2; f1 = f2; x2 = lo + phi * (hi - lo); f2 = errfn(x2); }
+    }
+    (void)n_pos_arg;
+    return (lo + hi) / 2.0;
+}
+
+static double error_at_K(double k) {
+    K = k;
+    return total_error();
+}
+
 
 /* ---- parameter groups (finite differences) ---- */
 typedef struct { int32_t *p; int n; const char *name; int lo, hi; } PGroup;
@@ -205,7 +312,6 @@ static double pst_sweep(double E, int delta) {
         for (int sq = 0; sq < 64; sq++) {
             if (p == PAWN && (rank_of(sq) == 0 || rank_of(sq) == 7)) continue;  /* unused */
             for (int ph = 0; ph < 2; ph++) {
-                int orig = PST[p][ph][sq];
                 int best_d = 0;
                 double best_E = E;
                 for (int d = -delta; d <= delta; d += 2*delta) {
@@ -249,6 +355,14 @@ static void dump_pst(void) {
     fprintf(out, "};\n\n");
 }
 static void dump_arr2(const char *name, int32_t *a, int rows, int cols) {
+    if (rows == 1) {
+        /* match params.h: one-dimensional declaration for scalar groups */
+        fprintf(out, "int32_t %s[%d] = {", name, cols);
+        for (int c = 0; c < cols; c++)
+            fprintf(out, "%s%5d,", c ? " " : "", a[c]);
+        fprintf(out, " };\n\n");
+        return;
+    }
     fprintf(out, "int32_t %s[%d][%d] = {", name, rows, cols);
     for (int r = 0; r < rows; r++) {
         fprintf(out, "%s    ", r ? "" : "\n");
@@ -305,40 +419,28 @@ static void dump_params(const char *path) {
 
 int main(int argc, char **argv) {
     if (argc < 3) {
-        fprintf(stderr, "usage: %s training.txt out_params.c [rounds]\n", argv[0]);
+        fprintf(stderr,
+            "usage: %s <data.epd|training.txt> <out_params.c> [rounds] [max_positions]\n",
+            argv[0]);
         return 1;
     }
     const char *datafile = argv[1];
     const char *outfile  = argv[2];
     int rounds = argc > 3 ? atoi(argv[3]) : 4;
+    int cap    = argc > 4 ? atoi(argv[4]) : 2000000;
 
     board_init_all();
 
-    FILE *f = fopen(datafile, "r");
-    if (!f) { fprintf(stderr, "cannot open %s\n", datafile); return 1; }
-    char line[256];
-    int skipped = 0;
-    while (fgets(line, sizeof(line), f) && n_pos < MAX_POS) {
-        char *sp = strrchr(line, ' ');
-        if (!sp) continue;
-        double r = atof(sp + 1);
-        *sp = 0;
-        if (!parse_fen(&work, line)) continue;
-        Snap *sn = &snaps[n_pos];
-        for (int sq = 0; sq < 64; sq++) {
-            if (work.piece_on[sq] == EMPTY_SQUARE) { sn->piece_on[sq] = EMPTY_SQUARE; sn->color_on[sq] = 0; }
-            else { sn->piece_on[sq] = work.piece_on[sq]; sn->color_on[sq] = work.color_on[sq]; }
-        }
-        sn->side = (uint8_t)work.side;
-        double e = white_eval(n_pos);
-        if (e > 2000 || e < -2000) { skipped++; continue; }
-        results[n_pos] = r;
-        evals[n_pos] = e;
-        ph_of[n_pos] = work.game_phase > 24 ? 24 : work.game_phase;
-        n_pos++;
+    snaps   = malloc(sizeof(Snap)    * (size_t)cap);
+    results = malloc(sizeof(double)  * (size_t)cap);
+    evals   = malloc(sizeof(double)  * (size_t)cap);
+    ph_of   = malloc(sizeof(int)     * (size_t)cap);
+    if (!snaps || !results || !evals || !ph_of) {
+        fprintf(stderr, "out of memory for %d positions\n", cap);
+        return 1;
     }
-    fclose(f);
-    fprintf(stderr, "loaded %d positions (%d skipped as hopeless)\n", n_pos, skipped);
+
+    load_data(datafile, cap);
     if (n_pos < 100) { fprintf(stderr, "not enough data\n"); return 1; }
 
     /* deterministic shuffle + 10% holdout for honest validation */
@@ -352,43 +454,41 @@ int main(int argc, char **argv) {
         int tp = ph_of[i]; ph_of[i] = ph_of[j]; ph_of[j] = tp;
     }
     int n_train = n_pos - n_pos / 10;
-    fprintf(stderr, "train %d / holdout %d\n", n_train, n_pos - n_train);
+    int n_hold  = n_pos - n_train;
+    fprintf(stderr, "train %d / holdout %d\n", n_train, n_hold);
 
-    double E = 1e9;
-    double startE = 0;
-    K = 120;
-    startE = total_error();
-    fprintf(stderr, "start error (K=120) = %.6f\n", startE);
+    /* find the sigmoid scaling constant K by golden-section search
+     * (texel_tuning.md step 4), then freeze it for the whole run */
+    double startE;
+    {
+        int full_n = n_pos;
+        n_pos = n_train;
+        K = golden_section_K(60.0, 800.0, n_train, error_at_K);
+        startE = total_error();
+        fprintf(stderr, "golden-section K = %.1f cp, start error = %.6f\n", K, startE);
 
-    n_hold = n_pos - n_train;
-    n_pos = n_train;                    /* tune on the training split only */
-    build_pst_lists();
-    double (*hold_err)() = NULL; (void)hold_err;
+        build_pst_lists();
 
-    for (int round = 1; round <= rounds; round++) {
-        /* reselect K each round over a wide grid */
-        double bestK = K, bestEk = 1e9;
-        for (double k = 80; k <= 200.01; k += 20) {
-            K = k;
-            double Ek = total_error();
-            if (Ek < bestEk) { bestEk = Ek; bestK = k; }
+        double E = startE;
+        for (int round = 1; round <= rounds; round++) {
+            /* re-fit K every round (cheap: closed-form PST deltas only) */
+            K = golden_section_K(K * 0.6, K * 1.6, n_train, error_at_K);
+            E = total_error();
+            fprintf(stderr, "round %d: K=%.1f  error = %.6f\n", round, K, E);
+            int pst_delta = round <= 2 ? 6 : (round == 3 ? 3 : 1);
+            int grp_delta = round <= 2 ? 4 : 2;
+            E = pst_sweep(E, pst_delta);
+            fprintf(stderr, "round %d: pst sweep (d=%d) -> %.6f\n", round, pst_delta, E);
+            refresh_psqt_tables();   /* load_pos refreshes accumulators per eval */
+            E = fd_error();
+            E = group_sweep(E, grp_delta);
+            fprintf(stderr, "round %d: group sweep (d=%d) -> %.6f\n", round, grp_delta, E);
         }
-        K = bestK;
-        E = total_error();
-        fprintf(stderr, "round %d: K=%.0f  error = %.6f\n", round, K, E);
-        int pst_delta = round <= 2 ? 6 : (round == 3 ? 3 : 1);
-        int grp_delta = round <= 2 ? 4 : 2;
-        E = pst_sweep(E, pst_delta);
-        fprintf(stderr, "round %d: pst sweep (d=%d) -> %.6f\n", round, pst_delta, E);
-        refresh_psqt_tables();   /* load_pos refreshes accumulators per eval */
-        E = fd_error();
-        E = group_sweep(E, grp_delta);
-        fprintf(stderr, "round %d: group sweep (d=%d) -> %.6f\n", round, grp_delta, E);
+        n_pos = full_n;
     }
 
     /* holdout error with the final parameters */
-    int tune_n = n_pos;
-    n_pos = tune_n + n_hold;
+    int tune_n = n_train;
     eval_clear_pawn_hash();
     double hold = 0;
     for (int i = tune_n; i < n_pos; i++) {
