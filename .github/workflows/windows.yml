@@ -1,0 +1,38 @@
+name: windows-build
+
+on:
+  push:
+    branches: [main]
+    paths: ['src/**', 'Makefile', 'nets/**', '.github/workflows/windows.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install MinGW cross-compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64
+
+      - name: Build self-contained ravager.exe
+        run: |
+          make ravager.exe EVALFILE=nets/640HL-S-5io8-6116M-FRCv1.nnue
+          ls -la ravager.exe
+
+      - name: Package
+        run: |
+          mkdir -p out
+          cp ravager.exe out/ravager2-windows-x64.exe
+          cd out && zip -9 ravager2-windows-x64.zip ravager2-windows-x64.exe
+
+      - name: Attach to release v2.0
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v2.0
+          files: out/ravager2-windows-x64.zip

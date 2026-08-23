@@ -348,11 +348,12 @@ static void free_net(void) {
     nnue_loaded = false;
 }
 
-static bool load_ravager_stream(FILE *f) {
+static bool load_ravager_buf(const uint8_t *p, size_t n) {
     uint32_t magic = 0, version = 0;
-    if (fread(&magic, 4, 1, f) != 1 || fread(&version, 4, 1, f) != 1 ||
-        magic != NNUE_MAGIC || version != NNUE_VERSION)
-        return false;
+    if (n < 8) return false;
+    memcpy(&magic, p, 4); memcpy(&version, p + 4, 4);
+    if (magic != NNUE_MAGIC || version != NNUE_VERSION) return false;
+    p += 8; n -= 8;
 
     free_net();
     nnue_net.format       = NET_RAVAGER;
@@ -370,11 +371,11 @@ static bool load_ravager_stream(FILE *f) {
     nnue_net.out_b = NULL;
     if (!nnue_net.ft_w || !nnue_net.ft_b || !nnue_net.out_w) { free_net(); return false; }
 
-    int32_t bias32 = 0;
-    if (fread(nnue_net.ft_w,  2, FT, f) != FT ||
-        fread(nnue_net.ft_b,  2, 256, f) != 256 ||
-        fread(nnue_net.out_w, 2, 512, f) != 512 ||
-        fread(&bias32, 4, 1, f) != 1) { free_net(); return false; }
+    if (n < (FT + 256 + 512) * 2 + 4) { free_net(); return false; }
+    memcpy(nnue_net.ft_w,  p, FT * 2);          p += FT * 2;
+    memcpy(nnue_net.ft_b,  p, 256 * 2);         p += 256 * 2;
+    memcpy(nnue_net.out_w, p, 512 * 2);         p += 512 * 2;
+    int32_t bias32; memcpy(&bias32, p, 4);
     nnue_net.rav_out_bias = bias32;
 
     nnue_loaded = true;
@@ -398,7 +399,7 @@ static bool leorik_dims_from_name(const char *path, int *H, int *K, int *O) {
     return true;
 }
 
-static bool load_leorik_stream(FILE *f, const char *path) {
+static bool load_leorik_buf(const uint8_t *p, size_t n, const char *path) {
     int H = 640, K = 5, O = 8;                     /* current Leorik default */
     bool named = leorik_dims_from_name(path, &H, &K, &O);
 
@@ -408,16 +409,12 @@ static bool load_leorik_stream(FILE *f, const char *path) {
 
     /* headerless: validate against the expected byte count when the
      * filename did not give us dimensions */
-    if (!named && fseek(f, 0, SEEK_END) == 0) {
-        long sz = ftell(f);
-        long need = (long)(ft_cnt + H + ow_cnt + ob_cnt) * 2;
-        rewind(f);
-        if (sz < need) {
-            fprintf(stderr,
-                "info string cannot infer Leorik net dims from '%s'\n", path);
-            return false;
-        }
-    } else rewind(f);
+    size_t need = (ft_cnt + H + ow_cnt + ob_cnt) * 2;
+    if (!named && n < need) {
+        fprintf(stderr,
+            "info string cannot infer Leorik net dims from '%s'\n", path);
+        return false;
+    }
 
     free_net();
     nnue_net.format       = NET_LEORIK;
@@ -435,18 +432,18 @@ static bool load_leorik_stream(FILE *f, const char *path) {
     if (!nnue_net.ft_w || !nnue_net.ft_b || !nnue_net.out_w || !nnue_net.out_b) {
         free_net(); return false;
     }
+    int16_t *ob16 = NULL;
+    (void)ob16;
 
-    int16_t *ob16 = malloc(ob_cnt * 2);
-    if (!ob16) { free_net(); return false; }
-
-    bool ok = fread(nnue_net.ft_w,  2, ft_cnt, f) == ft_cnt &&
-              fread(nnue_net.ft_b,  2, (size_t)H, f) == (size_t)H &&
-              fread(nnue_net.out_w, 2, ow_cnt, f) == ow_cnt &&
-              fread(ob16, 2, ob_cnt, f) == ob_cnt;
-    if (ok)
-        for (size_t i = 0; i < ob_cnt; i++) nnue_net.out_b[i] = ob16[i];
+    if (n < need) { free(ob16); free_net(); return false; }
+    memcpy(nnue_net.ft_w,  p, ft_cnt * 2);   p += ft_cnt * 2;
+    memcpy(nnue_net.ft_b,  p, (size_t)H * 2); p += (size_t)H * 2;
+    memcpy(nnue_net.out_w, p, ow_cnt * 2);   p += ow_cnt * 2;
+    for (size_t i = 0; i < ob_cnt; i++) {
+        int16_t v; memcpy(&v, p + i * 2, 2);
+        nnue_net.out_b[i] = v;
+    }
     free(ob16);
-    if (!ok) { free_net(); return false; }
 
     nnue_loaded = true;
     return true;
@@ -454,14 +451,15 @@ static bool load_leorik_stream(FILE *f, const char *path) {
 
 /* Detect format and dispatch. Ravager nets carry a magic header; Leorik
  * nets are headerless int16 dumps recognised by filename/size. Both entry
- * points (file + embedded blob) share this path. */
-static bool nnue_load_any(FILE *f, const char *name_hint) {
+ * points (file + embedded blob) share this buffer-based path — portable
+ * across POSIX and Windows. */
+static bool nnue_load_any(const uint8_t *p, size_t n, const char *name_hint) {
     const char *disp = (name_hint && *name_hint) ? name_hint : "<embedded>";
 
     uint32_t magic = 0;
-    if (fread(&magic, 4, 1, f) == 1 && magic == NNUE_MAGIC) {
-        rewind(f);
-        if (!load_ravager_stream(f)) {
+    if (n >= 8) memcpy(&magic, p, 4);
+    if (magic == NNUE_MAGIC) {
+        if (!load_ravager_buf(p, n)) {
             fprintf(stderr, "info string invalid Ravager net %s\n", disp);
             return false;
         }
@@ -471,8 +469,7 @@ static bool nnue_load_any(FILE *f, const char *name_hint) {
         return true;
     }
 
-    rewind(f);
-    if (!load_leorik_stream(f, disp)) {
+    if (!load_leorik_buf(p, n, disp)) {
         fprintf(stderr, "info string unrecognised NNUE file %s\n", disp);
         return false;
     }
@@ -485,18 +482,25 @@ static bool nnue_load_any(FILE *f, const char *name_hint) {
 bool nnue_load_file(const char *path) {
     FILE *f = fopen(path, "rb");
     if (!f) { fprintf(stderr, "info string cannot open NNUE file %s\n", path); return false; }
-    bool ok = nnue_load_any(f, path);
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return false; }
+    long sz = ftell(f);
+    rewind(f);
+    if (sz <= 0) { fclose(f); fprintf(stderr, "info string cannot read NNUE file %s\n", path); return false; }
+    uint8_t *buf = malloc((size_t)sz);
+    if (!buf || fread(buf, 1, (size_t)sz, f) != (size_t)sz) {
+        free(buf); fclose(f);
+        fprintf(stderr, "info string cannot read NNUE file %s\n", path);
+        return false;
+    }
     fclose(f);
+    bool ok = nnue_load_any(buf, (size_t)sz, path);
+    free(buf);
     return ok;
 }
 
 bool nnue_load_embedded(void) {
 #ifdef HAVE_EMBEDDED_NET
-    FILE *f = fmemopen((void*)gEmbeddedNetData, gEmbeddedNetSize, "rb");
-    if (!f) { fprintf(stderr, "info string cannot read embedded NNUE\n"); return false; }
-    bool ok = nnue_load_any(f, NULL);   /* no filename: dims inferred by size */
-    fclose(f);
-    return ok;
+    return nnue_load_any(gEmbeddedNetData, gEmbeddedNetSize, NULL);
 #else
     return false;
 #endif

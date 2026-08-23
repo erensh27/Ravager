@@ -13,7 +13,10 @@ UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),Linux)
   ARCH := $(shell uname -m)
   ifeq ($(ARCH),x86_64)
-    CFLAGS += -march=native
+    # skip -march=native when cross-compiling the Windows binary
+    ifeq (,$(findstring ravager.exe,$(MAKECMDGOALS)))
+      CFLAGS += -march=native
+    endif
   endif
 endif
 
