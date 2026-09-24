@@ -37,7 +37,7 @@ optional setup is a `SyzygyPath`.
 
 | Engine | CCRL 40/15 | CCRL 40/2 |
 |---|---:|---:|
-| Ravager 2 | **3249** | - |
+| Ravager 2 | **3309** | - |
 
 ## ✦ Build
 
