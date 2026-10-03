@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="#strength"><img alt="CCRL 40/15 rating" src="https://img.shields.io/badge/CCRL%2040%2F15-3194-d4a548"></a>
+  <a href="#rating"><img alt="CCRL 40/15 rating: 3324" src="https://img.shields.io/badge/CCRL%2040%2F15-3324-d4a548"></a>
   <a href="LICENSE"><img alt="License MIT" src="https://img.shields.io/badge/license-MIT-4c8f56"></a>
   <img alt="Language" src="https://img.shields.io/badge/language-C11-5a7ea6">
   <img alt="Protocol" src="https://img.shields.io/badge/protocol-UCI-8a6fb8">
@@ -17,7 +17,7 @@ texel-tuned handcrafted fallback eval — all compiled into one binary with the
 network **embedded**. Download it, point your GUI at it, play. The only
 optional setup is a `SyzygyPath`.
 
-## ✦ Features
+## Features
 
 - **NNUE evaluation** — `(768→H)x2` dual-perspective accumulator updated
   incrementally during search; king-bucket changes repair lazily.
@@ -33,13 +33,11 @@ optional setup is a `SyzygyPath`.
   butterfly + continuation history, LMR/LMP, RFP/razoring/futility,
   adaptive null move, ProbCut-lite, singular extensions, SEE-pruned qsearch.
 
-## ✦ Strength
+## Rating
 
-| Engine | CCRL 40/15 | CCRL 40/2 |
-|---|---:|---:|
-| Ravager 2 | **3324** | - |
+[CCRL 40/15](https://computerchess.org.uk/4040/) rating: **3324**, as of 3 October 2026.
 
-## ✦ Build
+## Build
 
 ```bash
 make            # self-contained binary, NNUE net embedded (~5 MB)
@@ -50,11 +48,10 @@ make tuner      # texel tuner binary
 ./ravager bench # fixed-depth benchmark
 ```
 
-Prebuilt binaries live on the
-[releases page](../../releases) — Linux and Windows, both with the
-net embedded. Zero configuration required except an optional `SyzygyPath`.
+Prebuilt binaries are on the [releases page](../../releases). Set `SyzygyPath`
+to enable tablebase probing.
 
-## ✦ UCI options
+## UCI options
 
 | Option | Type | Default | Description |
 |---|---|---|---|
@@ -70,7 +67,7 @@ net embedded. Zero configuration required except an optional `SyzygyPath`.
 Environment conveniences: `RAVAGER_EVALFILE=<net>` preloads a net at startup;
 `RAVAGER_NNUE_VERIFY=1` enables the accumulator self-check (slow, debugging).
 
-## ✦ Tools
+## Tools
 
 | command | purpose |
 |---|---|
@@ -80,14 +77,12 @@ Environment conveniences: `RAVAGER_EVALFILE=<net>` preloads a net at startup;
 | `make tuner && ./tuner data.epd out.c [rounds]` | texel tuning (EPD or datagen format) |
 | `python3 tools/verify_leorik.py <net> <fens…>` | independent NNUE forward-pass reference |
 
-## ✦ Credits
+## Credits
 
-Ideas synthesised from the classic HCE engines — Stockfish, Komodo, Houdini,
-Ethereal, Shredder, Rybka (see [CREDITS.md](CREDITS.md)). Bundled
-third-party components: **Pyrrhic** (Syzygy probing, MIT, `src/tb/LICENSE`),
-**incbin.h** (graphitemaster), **Leorik** nets (Thomas Jahn, MIT), and the
-**Zurichess** quiet-labeled tuning dataset.
+Ravager's evaluation and search draw on published techniques from Stockfish,
+Komodo, Houdini, Ethereal, Shredder, Rybka, and other engines. Third-party
+code and data are listed in [CREDITS.md](CREDITS.md).
 
-## ✦ License
+## License
 
 [MIT](LICENSE) © erensh27
