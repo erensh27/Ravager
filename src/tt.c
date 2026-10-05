@@ -1,5 +1,6 @@
 /* tt.c — bucketed transposition table (depth-preferred + always-replace,
- * as popularised by Stockfish-classic engines) with generational ageing. */
+ * as popularised by Stockfish-classic engines) with generational ageing.
+ * Ravager 2.1: improved replacement strategy + prefetch support. */
 
 #include "bitboard.h"
 #include "tt.h"
@@ -19,8 +20,8 @@ typedef struct {
     TTEntry always_replace;
 } TTBucket;
 
-static TTBucket *tt_table = NULL;
-static uint64_t  tt_buckets = 0;
+TTBucket *tt_table = NULL;   /* exposed for tt_prefetch inline */
+uint64_t  tt_buckets = 0;    /* exposed for tt_prefetch inline */
 static int8_t    tt_age = 0;
 
 void tt_alloc(int mb) {
@@ -68,8 +69,13 @@ void tt_store(uint64_t hash, int score, Move move, int depth, int bound, int ply
     ne.pad   = 0;
 
     TTEntry *dp = &bucket->depth_preferred;
-    if (dp->key == key || depth >= dp->depth || dp->age != tt_age)
+    /* Improved replacement: prefer to keep high-depth fresh entries.
+     * Quality = depth - age_penalty; replace dp only if new entry wins. */
+    int dp_quality = (int)dp->depth - 4 * (int8_t)(tt_age - dp->age);
+    int ne_quality = (int)depth;
+    if (dp->key == key || ne_quality >= dp_quality || dp->age != tt_age)
         *dp = ne;
+    /* Always-replace slot always gets the newest entry */
     bucket->always_replace = ne;
 }
 
@@ -100,6 +106,12 @@ Move tt_probe_move(uint64_t hash) {
     int s; Move m; int d, bnd;
     if (tt_probe(hash, &s, &m, &d, &bnd, 0)) return m;
     return NO_MOVE;
+}
+
+void tt_prefetch(uint64_t hash) {
+    if (!tt_table) return;
+    uint64_t idx = (uint64_t)(((__uint128_t)hash * (__uint128_t)tt_buckets) >> 64);
+    __builtin_prefetch((const char*)&tt_table[idx], 0, 1);
 }
 
 int tt_hashfull(void) {

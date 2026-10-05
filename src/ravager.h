@@ -15,7 +15,7 @@
 #include <time.h>
 
 #define ENGINE_NAME    "Ravager"
-#define ENGINE_VERSION "2"
+#define ENGINE_VERSION "2.1"
 #define ENGINE_AUTHOR  "Ravager Dev"
 
 /* Colours */

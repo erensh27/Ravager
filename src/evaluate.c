@@ -9,7 +9,7 @@
 
 /* Non-linear king-safety curve (frozen — tuned indirectly through the
  * attack weights that feed it). */
-static const int king_attack_weight[6] = { 0, 20, 20, 40, 80, 0 };
+static const int king_attack_weight[6] = { 0, 20, 20, 40, 100, 0 };
 static const int king_safety_table[100] = {
       0,  0,  1,  2,  3,  5,  7,  9, 12, 15,
      18, 22, 26, 30, 35, 39, 44, 50, 56, 62,
@@ -242,6 +242,14 @@ int evaluate(Board *b) {
                     attacker_count[opp]++;
                 }
 
+                /* Contact check: piece directly reaches opponent king square */
+                {
+                    int opp_ksq_contact = (c == WHITE) ? bksq : wksq;
+                    if (att & (1ULL << opp_ksq_contact)) {
+                        attack_units[opp] += 2;
+                    }
+                }
+
                 if (att & b->pieces[opp][QUEEN]) {
                     total.mg += sign * THREAT_Q_BY_MINOR[MG];
                     total.eg += sign * THREAT_Q_BY_MINOR[EG];
@@ -280,6 +288,14 @@ int evaluate(Board *b) {
                     attacker_count[opp]++;
                 }
 
+                /* Contact check: piece directly reaches opponent king square */
+                {
+                    int opp_ksq_contact = (c == WHITE) ? bksq : wksq;
+                    if (att & (1ULL << opp_ksq_contact)) {
+                        attack_units[opp] += 2;
+                    }
+                }
+
                 if (att & b->pieces[opp][QUEEN]) {
                     total.mg += sign * THREAT_Q_BY_MINOR[MG];
                     total.eg += sign * THREAT_Q_BY_MINOR[EG];
@@ -309,9 +325,32 @@ int evaluate(Board *b) {
                     total.mg += sign * ROOK_DOUBLED[MG]; total.eg += sign * ROOK_DOUBLED[EG];
                 }
 
+                /* Rook on 7th: strong when enemy king is on back rank or enemy pawns on 7th */
+                {
+                    int r7 = (c == WHITE) ? 6 : 1;
+                    int r8 = (c == WHITE) ? 7 : 0;
+                    Bitboard rank7opp = (c == WHITE) ? RANK_7 : RANK_2;
+                    if (rank_of(sq) == r7) {
+                        bool king_on_back = (rank_of(lsb(b->pieces[opp][KING])) == r8);
+                        bool pawns_on_7th = (b->pieces[opp][PAWN] & rank7opp) != 0;
+                        if (king_on_back || pawns_on_7th) {
+                            total.mg += sign * ROOK_ON_7TH[MG];
+                            total.eg += sign * ROOK_ON_7TH[EG];
+                        }
+                    }
+                }
+
                 if (att & opp_kz) {
                     attack_units[opp] += king_attack_weight[ROOK] / 10;
                     attacker_count[opp]++;
+                }
+
+                /* Contact check: piece directly reaches opponent king square */
+                {
+                    int opp_ksq_contact = (c == WHITE) ? bksq : wksq;
+                    if (att & (1ULL << opp_ksq_contact)) {
+                        attack_units[opp] += 2;
+                    }
                 }
 
                 if (att & b->pieces[opp][QUEEN]) {
@@ -334,6 +373,14 @@ int evaluate(Board *b) {
                 if (att & opp_kz) {
                     attack_units[opp] += king_attack_weight[QUEEN] / 10;
                     attacker_count[opp]++;
+                }
+
+                /* Contact check: piece directly reaches opponent king square */
+                {
+                    int opp_ksq_contact = (c == WHITE) ? bksq : wksq;
+                    if (att & (1ULL << opp_ksq_contact)) {
+                        attack_units[opp] += 3;
+                    }
                 }
 
                 int rel = relative_rank(c, sq);
@@ -371,6 +418,29 @@ int evaluate(Board *b) {
             if (factor > 0) {
                 total.mg += sign * sp * SPACE[MG] * factor / 10;
                 total.eg += sign * sp * SPACE[EG] * factor / 10;
+            }
+        }
+
+        /* Weak squares: squares in enemy half not covered by enemy pawns,
+         * controlled by our minor pieces */
+        {
+            Bitboard enemy_half = (c == WHITE)
+                ? (RANK_5 | RANK_6 | RANK_7 | RANK_8)
+                : (RANK_4 | RANK_3 | RANK_2 | RANK_1);
+            Bitboard weak_sq = enemy_half & ~enemy_pawn_att;
+            Bitboard own_minors = b->pieces[c][KNIGHT] | b->pieces[c][BISHOP];
+            int controlled = 0;
+            Bitboard tmp_minors = own_minors;
+            while (tmp_minors) {
+                int sq2 = lsb_pop(&tmp_minors);
+                int pt2 = b->piece_on[sq2] % 6;
+                Bitboard minor_att = (pt2 == KNIGHT) ? knight_attack_table[sq2]
+                                   : bishop_attacks(sq2, occ);
+                controlled += popcount(minor_att & weak_sq & ~b->occupancy[c]);
+            }
+            if (controlled > 0) {
+                total.mg += sign * controlled * WEAK_SQ_BONUS[MG];
+                total.eg += sign * controlled * WEAK_SQ_BONUS[EG];
             }
         }
 
@@ -413,8 +483,17 @@ int evaluate(Board *b) {
         while (passers) {
             int sq = lsb_pop(&passers);
             int rel = relative_rank(c, sq);
-            total.mg += sign * PASSED_BASE[MG][rel];
-            total.eg += sign * PASSED_BASE[EG][rel];
+
+            int stop_sq = (c == WHITE) ? sq + 8 : sq - 8;
+            bool blocked = (stop_sq >= 0 && stop_sq < 64 &&
+                            (b->occ_all & (1ULL << stop_sq)) != 0);
+            if (blocked) {
+                total.mg += sign * PASSED_BASE[MG][rel] / 3;
+                total.eg += sign * PASSED_BASE[EG][rel] / 3;
+            } else {
+                total.mg += sign * PASSED_BASE[MG][rel];
+                total.eg += sign * PASSED_BASE[EG][rel];
+            }
 
             Bitboard path = (c == WHITE) ? forward_file_mask[WHITE][sq] : forward_file_mask[BLACK][sq];
             if (!(b->occ_all & path)) {

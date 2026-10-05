@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/banner.png" alt="Ravager 2" width="100%"/>
+  <img src="assets/ravager.png" alt="Ravager 2.1" width="100%"/>
 </p>
 
 <p align="center">

@@ -100,11 +100,11 @@ static void run_datagen(int ngames, int movetime_ms, uint64_t seed, const char *
             if (is_insufficient_material(b) || b->half_move_clock >= 100) { result = 5; break; }
             MoveList ml;
             generate_moves(b, &ml);
-            int legal[MAX_MOVES], nl = 0;
+            int nl = 0;
             int mover = b->side;
             for (int j = 0; j < ml.count; j++) {
                 make_move(b, ml.moves[j]);
-                if (!is_in_check(b, mover)) legal[nl++] = j;
+                if (!is_in_check(b, mover)) nl++;
                 unmake_move(b, ml.moves[j]);
             }
             if (nl == 0) { result = is_in_check(b, mover) ? (mover == WHITE ? 0 : 1) : 5; break; }
@@ -229,12 +229,22 @@ static void parse_go(const char *line) {
         search_soft_ms = movetime - move_overhead_ms;
         search_hard_ms = movetime - move_overhead_ms / 2;
     } else if (my_time > 0) {
-        int moves_left = movestogo > 0 ? movestogo : 30;
-        if (game_hist_len >= 60 && !movestogo) moves_left = 20;  /* long game, speed up */
+        int moves_left = movestogo > 0 ? movestogo : 25;
+        if (!movestogo) {
+            /* Phase-aware estimate: fewer moves needed in endgame */
+            int phase = main_board.game_phase;
+            moves_left = 18 + phase / 4;   /* 18 (endgame) to 24 (opening) */
+            if (game_hist_len >= 80) moves_left -= 4;   /* late game: speed up */
+            if (moves_left < 10) moves_left = 10;
+        }
         int base = my_time / moves_left;
-        search_soft_ms = base + my_inc * 4 / 5 - move_overhead_ms;
-        search_hard_ms = search_soft_ms * 5;
-        if (search_hard_ms > my_time * 4 / 5) search_hard_ms = my_time * 4 / 5;
+        int soft = base + my_inc * 3 / 4 - move_overhead_ms;
+        int hard = soft * 4 + my_inc / 2;
+        /* Hard cap: never spend more than 75% of remaining clock on one move */
+        if (hard > my_time * 3 / 4) hard = my_time * 3 / 4;
+        if (hard < soft) hard = soft;
+        search_soft_ms = soft > 1 ? soft : 1;
+        search_hard_ms = hard;
     } else {
         search_soft_ms = 1000;
         search_hard_ms = 3000;

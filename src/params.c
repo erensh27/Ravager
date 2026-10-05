@@ -226,3 +226,6 @@ int32_t SPACE[2] = { 2, 4 };
 
 int32_t TEMPO[2] = { 2, 0 };
 
+int32_t ROOK_ON_7TH[2] = { 16, 32 };
+
+int32_t WEAK_SQ_BONUS[2] = { 3, 5 };

@@ -1,4 +1,5 @@
-/* see.c — static exchange evaluation (swap-list algorithm) */
+/* see.c — static exchange evaluation (swap-list algorithm).
+ * Ravager 2.1: fast path for uncontested captures. */
 
 #include "bitboard.h"
 
@@ -60,8 +61,16 @@ static int see(Board *b, int to_sq, int target_piece, int from_sq, int atkr_piec
 
 int see_move(Board *b, Move m) {
     int from = move_from(m), to = move_to(m);
-    int target = (b->occ_all & (1ULL << to)) ? (b->piece_on[to] % 6) : NO_PIECE;
-    if (move_is_ep(m)) target = PAWN;
+    int target   = (b->occ_all & (1ULL << to)) ? (b->piece_on[to] % 6) : NO_PIECE;
     int attacker = b->piece_on[from] % 6;
+    if (move_is_ep(m)) target = PAWN;
+
+    /* Fast path: if no defender can recapture after the attacker moves away,
+     * the SEE is simply the target value (no need for the full swap list). */
+    Bitboard occ_after = b->occ_all ^ (1ULL << from);
+    Bitboard defenders = all_attackers_to(b, to, occ_after) & b->occupancy[b->side ^ 1];
+    if (!defenders)
+        return (target != NO_PIECE) ? see_piece_val[target] : 0;
+
     return see(b, to, target, from, attacker);
 }

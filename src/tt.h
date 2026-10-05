@@ -11,5 +11,6 @@ bool tt_probe(uint64_t hash, int *score, Move *move, int *depth, int *bound, int
 int  tt_hashfull(void);
 void tt_age_step(void);
 Move tt_probe_move(uint64_t hash);
+void tt_prefetch(uint64_t hash);  /* cache-line prefetch for child node */
 
 #endif

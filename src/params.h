@@ -63,4 +63,7 @@ extern int32_t THREAT_Q_BY_ROOK[2];
 extern int32_t SPACE[2];
 extern int32_t TEMPO[2];
 
+extern int32_t ROOK_ON_7TH[2];
+extern int32_t WEAK_SQ_BONUS[2];
+
 #endif

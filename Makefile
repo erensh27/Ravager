@@ -1,4 +1,4 @@
-# Ravager 2 — Makefile
+# Ravager 2.1 — Makefile
 # HCE + NNUE evaluation, Syzygy tablebases via Pyrrhic.
 
 CC       ?= gcc
