@@ -3,19 +3,20 @@
 
 CC       ?= gcc
 CFLAGS   ?= -O3 -std=c11
-CFLAGS   += -Wall -Wextra -Wno-unused-parameter -Wno-missing-braces -pthread
+override CFLAGS += -Wall -Wextra -Wno-unused-parameter -Wno-missing-braces -pthread
 LDFLAGS  ?=
 LDLIBS   += -lm
 
 # Native build for maximum local performance (BMI2/POPCNT included).
-# For a portable release binary: make CFLAGS="-O3 -std=c11 -mbmi2 -mpopcnt"
+# For a portable release binary: make ARCH_FLAGS="-mavx2 -mbmi2 -mpopcnt"
 UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),Linux)
   ARCH := $(shell uname -m)
   ifeq ($(ARCH),x86_64)
     # skip -march=native when cross-compiling the Windows binary
     ifeq (,$(findstring ravager.exe,$(MAKECMDGOALS)))
-      CFLAGS += -march=native
+      ARCH_FLAGS ?= -march=native
+      override CFLAGS += $(ARCH_FLAGS)
     endif
   endif
 endif
@@ -31,7 +32,7 @@ ifneq ($(EVALFILE),)
   ifeq (,$(wildcard $(EVALFILE)))
     $(error NNUE net not found at '$(EVALFILE)' — run 'make net' to fetch it, or build HCE-only with 'make EVALFILE=')
   endif
-  CFLAGS += -DEVALFILE=\"$(EVALFILE)\"
+  override CFLAGS += -DEVALFILE=\"$(EVALFILE)\"
 endif
 
 SRC := src/bitboard.c src/board.c src/movegen.c src/see.c src/evaluate.c src/params.c \

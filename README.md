@@ -18,7 +18,7 @@ Superhuman chess engine written in C11.
 ## Installation & Downloads
 
 ### Prebuilt Binaries
-Download precompiled binaries from the [GitHub Releases](https://github.com/erensh27/Ravager/releases/tag/v2) page (currently featuring **Ravager 2**). Download the executable for your platform and load it into any UCI-compliant chess GUI (such as Cutechess, Banksia, Arena, or Fritz).
+Download precompiled binaries from the [GitHub Releases](https://github.com/erensh27/Ravager/releases/tag/v2.1) page (featuring **Ravager 2.1**). Download the executable for your platform and load it into any UCI-compliant chess GUI (such as Cutechess, Banksia, Arena, or Fritz).
 
 ### Building from Source
 The default neural network (`nets/640HL-S-5io8-6116M-FRCv1.nnue`) is already embedded directly into the binary via `incbin`, so **no extra network download is required**.
@@ -52,7 +52,7 @@ Official ratings on the [CCRL 40/15](https://computerchess.org.uk/4040/) benchma
 |:---|:---:|:---|
 | **Ravager 1** | — | Untested |
 | **Ravager 2** | **3324** | Official CCRL 40/15 rating (Oct 2026) |
-| **Ravager 2.1** | — | Testing in progress |
+| **Ravager 2.1** | — | Untested |
 
 ---
 
