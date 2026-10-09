@@ -6,14 +6,14 @@ A UCI chess engine written in C11, pairing Ravager's own search with an embedded
 
 ## Installation
 
-For a non-development build, simply navigate to the [releases page](https://github.com/erensh27/Ravager3/releases) and download the latest release.
+For a non-development build, simply navigate to the [releases page](https://github.com/erensh27/Ravager/releases) and download the latest release.
 
 For the latest development build, you can clone the repository and build it yourself:
 
 1. Clone the repository:
 
 ```bash
-git clone https://github.com/erensh27/Ravager3.git
+git clone https://github.com/erensh27/Ravager.git
 ```
 
 2. Build the engine:
