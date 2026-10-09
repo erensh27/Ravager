@@ -1,0 +1,44 @@
+name: windows-build
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install MinGW cross-compiler & zip
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 zip
+
+      - name: Build self-contained Ravager Fury
+        run: |
+          make ravager.exe ARCH_FLAGS="-mavx2 -mbmi2 -mpopcnt"
+          ls -la ravager.exe
+
+      - name: Package
+        run: |
+          mkdir -p out
+          cp ravager.exe out/ravager3-windows-x64.exe
+          cd out && zip -9 ravager3-windows-x64.zip ravager3-windows-x64.exe
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ravager3-windows-x64
+          path: out/ravager3-windows-x64.zip
+
+      - name: Attach to release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.release.tag_name }}
+          files: out/ravager3-windows-x64.zip

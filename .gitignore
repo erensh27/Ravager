@@ -1,0 +1,12 @@
+*.o
+/ravager
+/ravager-2.1
+/ravager.exe
+/tuner
+training*.txt
+*.pgn
+gmon.out
+data_quiet.epd
+
+*.d
+/orthodox-bench
