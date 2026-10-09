@@ -29,7 +29,6 @@ make
 | Ravager 2 | 3324  |
 | Ravager Fury | TBD |
 
-*Ravager 2.0 64-bit on the [CCRL 40/15 complete list](https://computerchess.org.uk/4040/rating_list_all.html), published October 2, 2026. Ravager Fury is left blank until it has an official rating.*
 
 ## Logistics & Features
 
