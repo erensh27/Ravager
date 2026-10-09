@@ -10,18 +10,13 @@ For a non-development build, simply navigate to the [releases page](https://gith
 
 For the latest development build, you can clone the repository and build it yourself:
 
-1. Install dependencies (e.g., on Ubuntu/Debian):
-```bash
-sudo apt-get update && sudo apt-get install libzstd-dev
-```
-
-2. Clone the repository:
+1. Clone the repository:
 
 ```bash
 git clone https://github.com/erensh27/Ravager3.git
 ```
 
-3. Build the engine:
+2. Build the engine:
 
 ```bash
 make -j$(nproc)

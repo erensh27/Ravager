@@ -10,7 +10,7 @@
 
 # NNUE verification
 
-Run `sh tests/run_nnue.sh [net]` from the source tree. Requires GCC and libzstd. `RAVAGER_NNUE_TIER=scalar|avx2|avx512` forces an inference tier; unsupported tiers fall back to an available implementation.
+Run `sh tests/run_nnue.sh [net]` from the source tree. Requires GCC. `RAVAGER_NNUE_TIER=scalar|avx2|avx512` forces an inference tier; unsupported tiers fall back to an available implementation.
 
 - nnue_incremental.c: randomized legal moves and unmake, promotion/en-passant fixtures, lazy/fresh/scalar accumulator checks.
 - special.c: forced castling both sides/colors, en passant, all promotions, promotion captures and king mirror changes, built with ASan/UBSan.
@@ -20,7 +20,7 @@ Run `sh tests/run_nnue.sh [net]` from the source tree. Requires GCC and libzstd.
 ## Honest aggregate benchmark
 
 Compile orthodox_bench.c with all engine sources except uci.c, plus nnue/nnue.c and nnue/inference.c,
-including src/tb/tbprobe.c, using `-O3 -std=c11 -march=native -pthread -Isrc -Innue -lm -lzstd`.
+including src/tb/tbprobe.c, using `-O3 -std=c11 -march=native -pthread -Isrc -Innue -lm`.
 Run it with the local net path and tests/orthodox86.txt.
 Set `RAVAGER_NNUE_TIER=avx2` to compare AVX2 consistently.
 

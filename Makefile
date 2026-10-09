@@ -4,7 +4,7 @@ CFLAGS ?= -O3 -std=c11
 override CFLAGS += -Wall -Wextra -Wno-unused-parameter -Wno-missing-braces -pthread
 CPPFLAGS += -Isrc -Innue -Itests
 LDFLAGS ?=
-LDLIBS += -lm -lzstd
+LDLIBS += -lm 
 UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),Linux)
   ifeq ($(shell uname -m),x86_64)
@@ -15,7 +15,7 @@ ifeq ($(UNAME_S),Linux)
   endif
 endif
 # Changing EVALFILE requires make clean before rebuilding.
-EVALFILE ?= nets/Ravager_NET.nnue.zst
+EVALFILE ?= nets/Ravager_NET.nnue
 ifneq ($(strip $(EVALFILE)),)
   override CPPFLAGS += -DEVALFILE='"$(EVALFILE)"'
   NET_DEP := $(EVALFILE)

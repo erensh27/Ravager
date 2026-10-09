@@ -1,7 +1,6 @@
-/* Ravager network loader: decompresses and installs the embedded or external net. */
+/* Ravager network loader: installs the embedded or external net. */
 #include "nnue.h"
 #include "inference.h"
-#include <zstd.h>
 #ifdef EVALFILE
 #include "incbin.h"
 INCBIN(RavagerNet,EVALFILE);
@@ -9,15 +8,7 @@ INCBIN(RavagerNet,EVALFILE);
 bool nnue_loaded=false,nnue_enabled=true;
 const char *nnue_tier="scalar";
 static bool install(const unsigned char *buf,size_t n){
- uint32_t magic=0;if(n>=4)memcpy(&magic,buf,4);
- if(magic==0xfd2fb528u){
-  unsigned long long size=ZSTD_getFrameContentSize(buf,n);
-  if(size!=NET_BYTES && size!=ZSTD_CONTENTSIZE_UNKNOWN)return false;
-  unsigned char *raw=malloc(NET_BYTES);if(!raw)return false;
-  size_t got=ZSTD_decompress(raw,NET_BYTES,buf,n);
-  bool ok=!ZSTD_isError(got) && got==NET_BYTES && net_load(raw,got);
-  free(raw);if(!ok)return false;
- }else if(n==NET_BYTES){if(!net_load(buf,n))return false;}
+ if(n==NET_BYTES){if(!net_load(buf,n))return false;}
  else return false;
  nnue_loaded=true;nnue_tier=net_tier;return true;
 }
