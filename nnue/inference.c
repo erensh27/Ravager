@@ -7,6 +7,17 @@
 #include "bitboard.h"
 #include <immintrin.h>
 #include <assert.h>
+#include <stdlib.h>
+#include <math.h>
+#include <string.h>
+#ifdef _WIN32
+#include <malloc.h>
+#define ravager_aligned_alloc(align, size) _aligned_malloc((size), (align))
+#define ravager_aligned_free(ptr) _aligned_free(ptr)
+#else
+#define ravager_aligned_alloc(align, size) aligned_alloc((align), (size))
+#define ravager_aligned_free(ptr) free(ptr)
+#endif
 #define WIDTH 1024
 #define AUX 64368
 #define PSQT 11264
@@ -370,9 +381,9 @@ static int forward_vnni(const Frame *f,const Board *b){
 static int (*forward)(const Frame*,const Board*)=forward_scalar;
 bool net_load(const unsigned char *bytes,size_t count){
  if(count!=NET_BYTES)return false;
- unsigned char *fresh=aligned_alloc(64,(count+63)&~(size_t)63);if(!fresh)return false;memcpy(fresh,bytes,count);
+ unsigned char *fresh=ravager_aligned_alloc(64,(count+63)&~(size_t)63);if(!fresh)return false;memcpy(fresh,bytes,count);
  /* f32 parameters must be finite before installing anything. */
- for(size_t i=L1B_OFFSET;i<count;i+=4){float v;memcpy(&v,fresh+i,4);if(!isfinite(v)){free(fresh);return false;}}
+ for(size_t i=L1B_OFFSET;i<count;i+=4){float v;memcpy(&v,fresh+i,4);if(!isfinite(v)){ravager_aligned_free(fresh);return false;}}
  for(int bucket=0;bucket<8;bucket++){
   for(int i=0;i<1024;i++)for(int j=0;j<32;j++)w1[bucket][i/4*128+j*4+i%4]=(int8_t)fresh[L1_OFFSET+(i*8+bucket)*32+j];
   memcpy(b1[bucket],fresh+L1B_OFFSET+bucket*32*4,32*4);
@@ -381,7 +392,7 @@ bool net_load(const unsigned char *bytes,size_t count){
   for(int i=0;i<32;i++)memcpy(&w3[bucket][i],fresh+L3_OFFSET+(i*8+bucket)*4,4);
   memcpy(&b3[bucket],fresh+L3B_OFFSET+bucket*4,4);
  }
- free(data);data=fresh;aw=(void*)data;pw=(void*)(data+AUX_BYTES);bias=(void*)(data+BIAS_OFFSET);
+ ravager_aligned_free(data);data=fresh;aw=(void*)data;pw=(void*)(data+AUX_BYTES);bias=(void*)(data+BIAS_OFFSET);
  feature_tables();rows=rows_scalar;forward=forward_scalar;net_tier="scalar";
  const char *force=getenv("RAVAGER_NNUE_TIER");
  if((!force || strcmp(force,"scalar")) && __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma")){rows=rows_avx2;forward=forward_avx2;net_tier="avx2";}

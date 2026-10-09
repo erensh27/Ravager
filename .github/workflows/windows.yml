@@ -27,18 +27,38 @@ jobs:
       - name: Package
         run: |
           mkdir -p out
+          cp ravager.exe out/ravager-fury-windows-x64-avx2.exe
           cp ravager.exe out/ravager3-windows-x64.exe
-          cd out && zip -9 ravager3-windows-x64.zip ravager3-windows-x64.exe
+          cd out
+          zip -9 ravager-fury-windows-x64-avx2.zip ravager-fury-windows-x64-avx2.exe
+          tar -czvf ravager-fury-windows-x64-avx2.tar.gz ravager-fury-windows-x64-avx2.exe
+          zip -9 ravager3-windows-x64.zip ravager3-windows-x64.exe
+          tar -czvf ravager3-windows-x64.tar.gz ravager3-windows-x64.exe
+          ls -la
+
+      - name: Verify build and embedded network
+        run: |
+          SIZE=$(stat -c%s ravager.exe)
+          echo "ravager.exe size: $SIZE bytes"
+          if [ "$SIZE" -lt 89000000 ]; then
+            echo "Error: Binary size is too small, NNUE net not embedded!"
+            exit 1
+          fi
+          echo "Verification passed: NNUE network is embedded."
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ravager3-windows-x64
-          path: out/ravager3-windows-x64.zip
+          name: ravager-fury-windows-x64
+          path: |
+            out/*.zip
+            out/*.tar.gz
 
       - name: Attach to release
         if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.release.tag_name }}
-          files: out/ravager3-windows-x64.zip
+          files: |
+            out/*.zip
+            out/*.tar.gz
