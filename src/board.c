@@ -305,7 +305,7 @@ void make_move(Board *b, Move m) {
     b->hash ^= castle_key(b,old_cr) ^ castle_key(b,b->castling_rights);
 
     /* Only set ep square if an enemy pawn could actually capture there
-     * (keeps hash keys cleaner — Stockfish-style conditional ep) */
+     * (keeps hash keys cleaner — conditional ep) */
     if (piece == PAWN && abs(to - from) == 16) {
         int ep = (side == WHITE) ? from + 8 : from - 8;
         if (pawn_attack_table[side][ep] & b->pieces[opp][PAWN]) {

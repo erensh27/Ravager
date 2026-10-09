@@ -1,5 +1,5 @@
-/* tt.c — bucketed transposition table (depth-preferred + always-replace,
- * as popularised by Stockfish-classic engines) with generational ageing.
+/* tt.c — bucketed transposition table (depth-preferred + always-replace)
+ * with generational ageing.
  * Ravager 2.1: improved replacement strategy + prefetch support. */
 
 #include "bitboard.h"

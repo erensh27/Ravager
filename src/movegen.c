@@ -1,4 +1,4 @@
-/* movegen.c — pseudo-legal move generation (Andscacs/Ethereal tradition).
+/* movegen.c — pseudo-legal move generation.
  *
  * Moves are validated by the caller: after make_move(), test
  * is_in_check(board, mover). This drops the per-node pin and check-mask

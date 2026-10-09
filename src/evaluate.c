@@ -1,8 +1,7 @@
 /* evaluate.c — the handcrafted evaluation.
  *
  * All numeric parameters live in params.c (see params.h) so the texel tuner
- * can optimise them. Ideas borrowed from the classic HCE engines — full
- * attribution in docs/CREDITS.md. */
+ * can optimise them. */
 
 #include "bitboard.h"
 #include "params.h"
@@ -120,7 +119,7 @@ static const PawnEntry *get_pawn_entry(const Board *b) {
 }
 
 /* Material-based drawishness: returns a scale factor in [0..64] applied to
- * the endgame component before tapering (Shredder/Komodo tradition). */
+ * the endgame component before tapering. */
 static int endgame_scale(const Board *b) {
     int scale = 64;
 

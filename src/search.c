@@ -1,7 +1,6 @@
 /* search.c — the Ravager 2.0 search (Phase A revision).
  *
- * Techniques assembled from the classic pure-HCE engines (full credits in
- * docs/CREDITS.md): principal variation search with aspiration windows, iterative
+ * Principal variation search with aspiration windows, iterative
  * deepening, transposition-table move ordering + cutoffs, killers, countermove
  * heuristics, butterfly + continuation history with gravity-style
  * bonus/malus, late move reductions, late move pruning, reverse futility
@@ -96,7 +95,7 @@ static _Thread_local int     eval_stack[MAX_PLY + 8];   /* static evals by ply, 
 static _Thread_local int capture_history[2][6][64][6];
 
 static void update_history_entry(int *h, int bonus) {
-    /* gravity formula, Ethereal/Stockfish style */
+    /* gravity formula */
     *h += bonus - *h * abs(bonus) / 16384;
 }
 
@@ -261,7 +260,7 @@ static Move pick_next_move(Board *b, MoveList *ml, int idx) {
     }
 }
 
-/* ---- LMR table (log-log reductions, Stockfish tradition) ---- */
+/* ---- LMR table (log-log reductions) ---- */
 static int lmr_table[64][64];
 void init_lmr_table(void) {
     for (int d = 1; d < 64; d++)
