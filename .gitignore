@@ -11,3 +11,6 @@ data_quiet.epd
 *.d
 /orthodox-bench
 example/
+
+dist/
+release-pkg/
