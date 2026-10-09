@@ -19,7 +19,7 @@ git clone https://github.com/erensh27/Ravager3.git
 2. Build the engine:
 
 ```bash
-make -j$(nproc)
+make
 ```
 
 ## Strength
