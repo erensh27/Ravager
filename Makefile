@@ -2,8 +2,8 @@
 CC ?= gcc
 CFLAGS ?= -O3 -std=c11
 override CFLAGS += -Wall -Wextra -Wno-unused-parameter -Wno-missing-braces -pthread
-CPPFLAGS += -Isrc -Innue -Itests -Ilocal_zstd/usr/include
-LDFLAGS ?= -Llocal_zstd/usr/lib/x86_64-linux-gnu
+CPPFLAGS += -Isrc -Innue -Itests
+LDFLAGS ?=
 LDLIBS += -lm -lzstd
 UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),Linux)

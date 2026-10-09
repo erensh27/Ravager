@@ -10,13 +10,18 @@ For a non-development build, simply navigate to the [releases page](https://gith
 
 For the latest development build, you can clone the repository and build it yourself:
 
-1. Clone the repository:
+1. Install dependencies (e.g., on Ubuntu/Debian):
+```bash
+sudo apt-get update && sudo apt-get install libzstd-dev
+```
+
+2. Clone the repository:
 
 ```bash
 git clone https://github.com/erensh27/Ravager3.git
 ```
 
-2. Build the engine:
+3. Build the engine:
 
 ```bash
 make -j$(nproc)
@@ -26,7 +31,7 @@ make -j$(nproc)
 
 | Version | CCRL 40/15 |
 | ------- | ---------- |
-| Ravager 2 | 3324 +/-21 |
+| Ravager 2 | 3324  |
 | Ravager Fury | TBD |
 
 *Ravager 2.0 64-bit on the [CCRL 40/15 complete list](https://computerchess.org.uk/4040/rating_list_all.html), published October 2, 2026. Ravager Fury is left blank until it has an official rating.*
@@ -81,4 +86,3 @@ Ravager Fury is an alpha-beta engine with a powerful neural-network evaluation a
 | SyzygyProbeLimit | 6 | 1-7 pieces |
 | Syzygy50MoveRule | true | Respect the fifty-move rule in tablebase probing |
 
-*Read more in [docs/NNUE.md](docs/NNUE.md), [docs/SEARCH.md](docs/SEARCH.md), and [docs/CREDITS.md](docs/CREDITS.md).*
