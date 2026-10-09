@@ -28,12 +28,9 @@ jobs:
         run: |
           mkdir -p out
           cp ravager.exe out/ravager-fury-windows-x64-avx2.exe
-          cp ravager.exe out/ravager3-windows-x64.exe
           cd out
           zip -9 ravager-fury-windows-x64-avx2.zip ravager-fury-windows-x64-avx2.exe
           tar -czvf ravager-fury-windows-x64-avx2.tar.gz ravager-fury-windows-x64-avx2.exe
-          zip -9 ravager3-windows-x64.zip ravager3-windows-x64.exe
-          tar -czvf ravager3-windows-x64.tar.gz ravager3-windows-x64.exe
           ls -la
 
       - name: Verify build and embedded network
