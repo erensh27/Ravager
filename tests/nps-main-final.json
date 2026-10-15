@@ -1,0 +1,176 @@
+{
+  "results": [
+    {
+      "exe": "/tmp/r3-main",
+      "nodes": 3359287,
+      "time": 16045,
+      "nps": 209366.59395450295,
+      "samples": [
+        {
+          "depth": 17,
+          "nodes": 722922,
+          "time": 3683
+        },
+        {
+          "depth": 17,
+          "nodes": 1282494,
+          "time": 7366
+        },
+        {
+          "depth": 17,
+          "nodes": 809635,
+          "time": 2177
+        },
+        {
+          "depth": 17,
+          "nodes": 544236,
+          "time": 2819
+        }
+      ]
+    },
+    {
+      "exe": "/tmp/r3-final",
+      "nodes": 3359287,
+      "time": 16096,
+      "nps": 208703.21819085488,
+      "samples": [
+        {
+          "depth": 17,
+          "nodes": 722922,
+          "time": 3729
+        },
+        {
+          "depth": 17,
+          "nodes": 1282494,
+          "time": 7309
+        },
+        {
+          "depth": 17,
+          "nodes": 809635,
+          "time": 2205
+        },
+        {
+          "depth": 17,
+          "nodes": 544236,
+          "time": 2853
+        }
+      ]
+    },
+    {
+      "exe": "/tmp/r3-final",
+      "nodes": 3359287,
+      "time": 16043,
+      "nps": 209392.69463317335,
+      "samples": [
+        {
+          "depth": 17,
+          "nodes": 722922,
+          "time": 3652
+        },
+        {
+          "depth": 17,
+          "nodes": 1282494,
+          "time": 7319
+        },
+        {
+          "depth": 17,
+          "nodes": 809635,
+          "time": 2176
+        },
+        {
+          "depth": 17,
+          "nodes": 544236,
+          "time": 2896
+        }
+      ]
+    },
+    {
+      "exe": "/tmp/r3-main",
+      "nodes": 3359287,
+      "time": 15782,
+      "nps": 212855.59498162463,
+      "samples": [
+        {
+          "depth": 17,
+          "nodes": 722922,
+          "time": 3625
+        },
+        {
+          "depth": 17,
+          "nodes": 1282494,
+          "time": 7202
+        },
+        {
+          "depth": 17,
+          "nodes": 809635,
+          "time": 2158
+        },
+        {
+          "depth": 17,
+          "nodes": 544236,
+          "time": 2797
+        }
+      ]
+    },
+    {
+      "exe": "/tmp/r3-main",
+      "nodes": 3359287,
+      "time": 16215,
+      "nps": 207171.56953438174,
+      "samples": [
+        {
+          "depth": 17,
+          "nodes": 722922,
+          "time": 3723
+        },
+        {
+          "depth": 17,
+          "nodes": 1282494,
+          "time": 7398
+        },
+        {
+          "depth": 17,
+          "nodes": 809635,
+          "time": 2241
+        },
+        {
+          "depth": 17,
+          "nodes": 544236,
+          "time": 2853
+        }
+      ]
+    },
+    {
+      "exe": "/tmp/r3-final",
+      "nodes": 3359287,
+      "time": 16501,
+      "nps": 203580.8132840434,
+      "samples": [
+        {
+          "depth": 17,
+          "nodes": 722922,
+          "time": 3749
+        },
+        {
+          "depth": 17,
+          "nodes": 1282494,
+          "time": 7571
+        },
+        {
+          "depth": 17,
+          "nodes": 809635,
+          "time": 2239
+        },
+        {
+          "depth": 17,
+          "nodes": 544236,
+          "time": 2942
+        }
+      ]
+    }
+  ],
+  "medians": {
+    "/tmp/r3-main": 209366.59395450295,
+    "/tmp/r3-final": 208703.21819085488
+  }
+}

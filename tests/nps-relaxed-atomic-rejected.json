@@ -1,0 +1,176 @@
+{
+  "results": [
+    {
+      "exe": "/tmp/r3-tt",
+      "nodes": 3359287,
+      "time": 16075,
+      "nps": 208975.8631415241,
+      "samples": [
+        {
+          "depth": 17,
+          "nodes": 722922,
+          "time": 3745
+        },
+        {
+          "depth": 17,
+          "nodes": 1282494,
+          "time": 7324
+        },
+        {
+          "depth": 17,
+          "nodes": 809635,
+          "time": 2170
+        },
+        {
+          "depth": 17,
+          "nodes": 544236,
+          "time": 2836
+        }
+      ]
+    },
+    {
+      "exe": "/tmp/r3-relaxed",
+      "nodes": 3359287,
+      "time": 16224,
+      "nps": 207056.64447731755,
+      "samples": [
+        {
+          "depth": 17,
+          "nodes": 722922,
+          "time": 3746
+        },
+        {
+          "depth": 17,
+          "nodes": 1282494,
+          "time": 7395
+        },
+        {
+          "depth": 17,
+          "nodes": 809635,
+          "time": 2177
+        },
+        {
+          "depth": 17,
+          "nodes": 544236,
+          "time": 2906
+        }
+      ]
+    },
+    {
+      "exe": "/tmp/r3-relaxed",
+      "nodes": 3359287,
+      "time": 15860,
+      "nps": 211808.76418663305,
+      "samples": [
+        {
+          "depth": 17,
+          "nodes": 722922,
+          "time": 3644
+        },
+        {
+          "depth": 17,
+          "nodes": 1282494,
+          "time": 7256
+        },
+        {
+          "depth": 17,
+          "nodes": 809635,
+          "time": 2157
+        },
+        {
+          "depth": 17,
+          "nodes": 544236,
+          "time": 2803
+        }
+      ]
+    },
+    {
+      "exe": "/tmp/r3-tt",
+      "nodes": 3359287,
+      "time": 15992,
+      "nps": 210060.46773386694,
+      "samples": [
+        {
+          "depth": 17,
+          "nodes": 722922,
+          "time": 3707
+        },
+        {
+          "depth": 17,
+          "nodes": 1282494,
+          "time": 7248
+        },
+        {
+          "depth": 17,
+          "nodes": 809635,
+          "time": 2178
+        },
+        {
+          "depth": 17,
+          "nodes": 544236,
+          "time": 2859
+        }
+      ]
+    },
+    {
+      "exe": "/tmp/r3-tt",
+      "nodes": 3359287,
+      "time": 16119,
+      "nps": 208405.42217259135,
+      "samples": [
+        {
+          "depth": 17,
+          "nodes": 722922,
+          "time": 3689
+        },
+        {
+          "depth": 17,
+          "nodes": 1282494,
+          "time": 7220
+        },
+        {
+          "depth": 17,
+          "nodes": 809635,
+          "time": 2213
+        },
+        {
+          "depth": 17,
+          "nodes": 544236,
+          "time": 2997
+        }
+      ]
+    },
+    {
+      "exe": "/tmp/r3-relaxed",
+      "nodes": 3359287,
+      "time": 16851,
+      "nps": 199352.38264791408,
+      "samples": [
+        {
+          "depth": 17,
+          "nodes": 722922,
+          "time": 3936
+        },
+        {
+          "depth": 17,
+          "nodes": 1282494,
+          "time": 7699
+        },
+        {
+          "depth": 17,
+          "nodes": 809635,
+          "time": 2233
+        },
+        {
+          "depth": 17,
+          "nodes": 544236,
+          "time": 2983
+        }
+      ]
+    }
+  ],
+  "medians": {
+    "/tmp/r3-tt": 208975.8631415241,
+    "/tmp/r3-relaxed": 207056.64447731755
+  }
+}
