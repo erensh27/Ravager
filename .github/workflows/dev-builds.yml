@@ -1,0 +1,60 @@
+name: dev-builds
+
+# Builds Linux and Windows binaries with the network embedded and commits
+# them to dev-builds/. No GitHub release is created.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'nnue/**'
+      - 'nets/**'
+      - 'Makefile'
+      - '.github/workflows/dev-builds.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: dev-builds
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install MinGW-w64
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-mingw-w64-x86-64
+
+      - name: Build Linux binary
+        run: |
+          make release
+          ./ravager-linux-x64-avx2 bench 8
+
+      - name: Build Windows binary
+        run: make windows
+
+      - name: Check the network is embedded
+        run: |
+          for f in ravager-linux-x64-avx2 ravager-windows-x64-avx2.exe; do
+            size=$(stat -c%s "$f")
+            echo "$f: $size bytes"
+            [ "$size" -gt 89000000 ] || { echo "network not embedded in $f"; exit 1; }
+          done
+
+      - name: Commit to dev-builds/
+        run: |
+          mkdir -p dev-builds
+          cp ravager-linux-x64-avx2 ravager-windows-x64-avx2.exe dev-builds/
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add dev-builds
+          if git diff --cached --quiet; then echo "no changes"; exit 0; fi
+          git commit -m "dev-builds: ${GITHUB_SHA::7}"
+          git pull --rebase origin main
+          git push origin HEAD:main

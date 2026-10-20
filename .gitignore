@@ -1,0 +1,8 @@
+# build output
+*.o
+*.d
+/ravager
+/ravager.exe
+/ravager-linux-x64-avx2
+/ravager-windows-x64-avx2.exe
+gmon.out
