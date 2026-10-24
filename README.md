@@ -28,7 +28,7 @@ The network is embedded into the binary at compile time (`EVALFILE`, default `ne
 | Version | CCRL 40/15 |
 | ------- | ---------- |
 | Ravager 2 | 3324 |
-| Ravager Fury/3.3.0 | TBD |
+| Ravager Fury/3.3.0 | 3585 |
 | Ravager 3 | TBD |
 
 ## Search
