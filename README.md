@@ -25,13 +25,11 @@ The network is embedded into the binary at compile time (`EVALFILE`, default `ne
 
 ## Strength
 
-| Version | CCRL 40/15 | CCI VLTC |
-| ------- | ---------- | -------- |
-| Ravager 2 | 3324 | 3178 |
-| Ravager Fury/3.3.0 | 3585 | 3501 |
-| Ravager 3 | TBD | 3722 |
-
-CCI VLTC (2m24s+1.12s) from the [Computer Chess Index](https://computer-chess-index.github.io/cci/), E-core list, checked 2026-10-25.
+| Version | [CCRL 40/15](https://computerchess.org.uk/ccrl/4040/rating_list_all.html) | [CCI VLTC](https://computer-chess-index.github.io/cci/) | [IPMAN](https://ipmanchess.yolasite.com/r9-7945hx-ai-engines.php) |
+| ------- | ---------- | -------- | ----- |
+| [Ravager 3](https://github.com/erensh27/Ravager/releases/tag/v3) | TBD | 3722 | 3552 |
+| [Ravager Fury](https://github.com/erensh27/Ravager/releases/tag/v3.3.0) | 3585 | 3501 | - |
+| Ravager 2 | 3329 | 3178 | - |
 
 ## Search
 
