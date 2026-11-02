@@ -25,11 +25,11 @@ The network is embedded into the binary at compile time (`EVALFILE`, default `ne
 
 ## Strength
 
-| Version | [CCRL 40/15](https://computerchess.org.uk/ccrl/4040/rating_list_all.html) | [CCRL 40/2 FRC](https://computerchess.org.uk/404FRC/) | [CCI VLTC](https://computer-chess-index.github.io/cci/CCIRatings2.html) | [IPMAN](https://ipmanchess.yolasite.com/r9-7945hx-ai-engines.php) |
-| ------- | ---------- | ------------- | -------- | ----- |
-| [Ravager 3](https://github.com/erensh27/Ravager/releases/tag/v3) | TBD | 4039<br>(14th) | 3721 | 3562 |
-| [Ravager Fury/3.3.0](https://github.com/erensh27/Ravager/releases/tag/v3.3.0) | 3585 | - | 3559 | - |
-| Ravager 2 | 3329 | - | 3349 | - |
+| Version | [CCRL 40/15](https://computerchess.org.uk/ccrl/4040/rating_list_all.html) | [CCRL 40/2 FRC](https://computerchess.org.uk/404FRC/) | [IPMAN](https://ipmanchess.yolasite.com/r9-7945hx-ai-engines.php) | [CCI VLTC](https://computer-chess-index.github.io/cci/CCIRatings2.html) |
+| ------- | ---------- | ------------- | ----- | -------- |
+| [Ravager 3](https://github.com/erensh27/Ravager/releases/tag/v3) | TBD | 4039<br>(14th) | 3562 | 3721 |
+| [Ravager Fury/3.3.0](https://github.com/erensh27/Ravager/releases/tag/v3.3.0) | 3542 | - | - | 3559 |
+| Ravager 2 | 3329 | - | - | 3349 |
 
 ## Search
 
