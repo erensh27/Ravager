@@ -42,11 +42,11 @@ The network is embedded into the binary at compile time (`EVALFILE`, default `ne
 - Move pruning: late move pruning, futility pruning, history pruning, SEE pruning with history-adjusted margins
 - Singular, double and triple extensions, negative extensions and multi-cut
 - Late move reductions driven by history, node type, TT-PV status, correction size and cutoff count, with deeper/shallower re-searches
-- Quiescence search with stand-pat, SEE ordering, futility pruning and full check evasions
+- Quiescence search with stand-pat, SEE ordering, futility pruning, full check evasions and one bounded pass of safe quiet checks at PV nodes
 - Draw handling: repetitions, fifty-move rule, insufficient material and upcoming-repetition detection (cuckoo tables)
 - Syzygy WDL probing in search and DTZ at the root
 - Time management that scales with best-move stability, best-move node share, failed-low iterations and forced moves; full pondering support
-- Lazy SMP with thread voting
+- Lazy SMP with shared-table helpers, staggered iteration depths, alternate root ordering and thread voting
 
 ## Evaluation
 

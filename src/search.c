@@ -259,8 +259,9 @@ static inline int draw_score(ThreadData *t) {
 }
 
 static inline int captured_type(const Board *b, Move m) {
-    if (move_is_ep(m) || move_is_promo(m)) return PAWN;
-    return b->piece_on[move_to(m)] % 6;
+    if (move_is_ep(m)) return PAWN;
+    int captured = b->piece_on[move_to(m)];
+    return captured == EMPTY_SQUARE ? PAWN : captured % 6;
 }
 
 static inline bool has_bit(Bitboard bb, int sq) { return (bb >> sq) & 1; }
@@ -671,7 +672,7 @@ static inline Move validated(const Board *b, Move m) {
 /* ------------------------------------------------------------------ */
 /* Quiescence search. */
 
-static int qsearch(ThreadData *t, Stack *ss, int alpha, int beta, bool pv_node) {
+static int qsearch(ThreadData *t, Stack *ss, int alpha, int beta, bool pv_node, int qply) {
     Board *b = &t->board;
     int ply = ss->ply;
     if (should_stop(t)) return 0;
@@ -742,7 +743,7 @@ static int qsearch(ThreadData *t, Stack *ss, int alpha, int beta, bool pv_node) 
         (ss + 1)->ply = ply + 1;
         if (best_score > -TB_WIN_BOUND) p.skip_quiets = true;
         moves_made++;
-        int score = -qsearch(t, ss + 1, -beta, -alpha, pv_node);
+        int score = -qsearch(t, ss + 1, -beta, -alpha, pv_node, qply + 1);
         undo_move(t, m);
         if (stopped()) return 0;
         if (score > best_score) {
@@ -753,6 +754,46 @@ static int qsearch(ThreadData *t, Stack *ss, int alpha, int beta, bool pv_node) 
                 if (pv_node) update_pv(t, ply, m);
             }
             if (alpha >= beta) break;
+        }
+    }
+    /* Search one bounded layer of safe quiet checks before leaving the horizon. */
+    if (!in_check && pv_node && qply == 0 && best_score < beta && !stopped()) {
+        MoveList checks;
+        generate_quiets(b, &checks);
+        int count = 0;
+        for (int i = 0; i < checks.count; i++) {
+            Move check = checks.moves[i];
+            if (move_is_noisy(b, check) || !move_gives_check(b, check) ||
+                !see_ge(b, check, 0) || !move_is_legal(b, check))
+                continue;
+            checks.moves[count] = check;
+            checks.scores[count] = checks.scores[i];
+            count++;
+        }
+        checks.count = count;
+        score_quiets(t, ss, &checks, 0);
+        for (int i = 0; i < count; i++) {
+            int best = i;
+            for (int j = i + 1; j < count; j++)
+                if (checks.scores[j] > checks.scores[best]) best = j;
+            Move move = checks.moves[i]; checks.moves[i] = checks.moves[best]; checks.moves[best] = move;
+            int score_order = checks.scores[i]; checks.scores[i] = checks.scores[best]; checks.scores[best] = score_order;
+
+            do_move(t, ss, move, false);
+            (ss + 1)->ply = ply + 1;
+            moves_made++;
+            int score = -qsearch(t, ss + 1, -beta, -alpha, pv_node, qply + 1);
+            undo_move(t, move);
+            if (stopped()) return 0;
+            if (score > best_score) {
+                best_score = score;
+                if (score > alpha) {
+                    best_move = move;
+                    alpha = score;
+                    if (pv_node) update_pv(t, ply, move);
+                }
+                if (alpha >= beta) break;
+            }
         }
     }
     if (moves_made == 0 && in_check) return mated_in(ply);
@@ -788,7 +829,7 @@ static int estimated_gain(const Board *b, Move m) {
 }
 
 static int negamax(ThreadData *t, Stack *ss, int alpha, int beta, int depth, bool cut_node, bool pv_node) {
-    if (depth <= 0) return qsearch(t, ss, alpha, beta, pv_node);
+    if (depth <= 0) return qsearch(t, ss, alpha, beta, pv_node, 0);
     Board *b = &t->board;
     int ply = ss->ply;
     bool root = ply == 0;
@@ -910,7 +951,7 @@ static int negamax(ThreadData *t, Stack *ss, int alpha, int beta, int depth, boo
 
         /* Razoring. */
         if (alpha < 2000 && static_eval < alpha - RAZOR_BASE - RAZOR_MUL * depth) {
-            int v = qsearch(t, ss, alpha, beta, false);
+            int v = qsearch(t, ss, alpha, beta, false, 0);
             if (v <= alpha) return v;
         }
 
@@ -967,7 +1008,7 @@ static int negamax(ThreadData *t, Stack *ss, int alpha, int beta, int depth, boo
             if (!move_is_legal(b, m)) continue;
             do_move(t, ss, m, true);
             (ss + 1)->ply = ply + 1;
-            int value = -qsearch(t, ss + 1, -pc_beta, -pc_beta + 1, false);
+            int value = -qsearch(t, ss + 1, -pc_beta, -pc_beta + 1, false, 0);
             int pc_depth = clampi(depth_base - clampi((value - pc_beta - PROBCUT_ADA_OFFSET) / PROBCUT_ADA_DIV, 0, 3),
                                   0, depth - 1);
             int base_depth = clampi(depth_base, 0, depth - 1);
@@ -1028,7 +1069,8 @@ static int negamax(ThreadData *t, Stack *ss, int alpha, int beta, int depth, boo
     int see_table[2] = {SEE_NOISY_MARGIN * depth * depth, SEE_QUIET_MARGIN * depth};
 
     Picker p;
-    picker_init(&p, tt_move, killer, MAIN_SEE_BOUND);
+    Move picker_tt_move = root && t->id && (t->id & 1) ? NO_MOVE : tt_move;
+    picker_init(&p, picker_tt_move, killer, MAIN_SEE_BOUND);
     Move m;
     while ((m = picker_next(&p, t, ss)) != NO_MOVE) {
         if (m == excluded) continue;
@@ -1204,7 +1246,8 @@ static void iterative_deepening(ThreadData *t) {
     Stack *ss = &t->stack[STACK_OFFSET];
     int mate_hits = 0;
 
-    for (int depth = 1; depth <= max_depth; depth++) {
+    int first_depth = 1 + (t->id % 3);
+    for (int depth = first_depth; depth <= max_depth; depth++) {
         t->root_depth = depth;
         t->seldepth = 0;
         t->optimism[0] = t->optimism[1] = 0;
@@ -1316,8 +1359,8 @@ static ThreadData *select_best_thread(void) {
         ThreadData *t = threads[i];
         if (!t->completed || !t->best_pv_len) continue;
         if (!best->best_pv_len) { best = t; continue; }
-        if (is_decisive(best->score)) {
-            if (abs(t->score) > abs(best->score)) best = t;
+        if (is_decisive(best->score) || is_decisive(t->score)) {
+            if (t->score > best->score) best = t;
             continue;
         }
         if (t->score >= TB_WIN_BOUND) { best = t; continue; }
