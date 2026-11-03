@@ -107,7 +107,7 @@ typedef struct {
     Board    board;
     int      id;
     _Atomic uint64_t nodes;
-    uint64_t tbhits;
+    _Atomic uint64_t tbhits;
     int      seldepth, root_depth, completed, score;
     Move     best_pv[MAX_PLY + 1];
     int      best_pv_len;
@@ -167,7 +167,8 @@ static uint64_t total_nodes(void) {
 
 static uint64_t total_tbhits(void) {
     uint64_t n = 0;
-    for (int i = 0; i < thread_count; i++) n += threads[i]->tbhits;
+    for (int i = 0; i < thread_count; i++)
+        n += atomic_load_explicit(&threads[i]->tbhits, memory_order_relaxed);
     return n;
 }
 
@@ -448,11 +449,16 @@ static int adjust_eval(const ThreadData *t, int raw, int corr) {
 /* ------------------------------------------------------------------ */
 /* Draw detection. */
 
-static bool is_draw(ThreadData *t, int ply) {
+static bool is_draw(ThreadData *t, const Stack *ss) {
     const Board *b = &t->board;
     if (b->half_move_clock >= 100 || is_insufficient_material(b)) return true;
-    int idx = t->key_root + ply;
-    int stop = idx - b->half_move_clock;
+    int idx = t->key_root + ss->ply;
+    int span = b->half_move_clock;
+    /* Ignore the synthetic null-move position and all history before it. */
+    int since_null = ss->plies_from_null - 1;
+    if (span > since_null) span = since_null;
+    if (span < 0) span = 0;
+    int stop = idx - span;
     if (stop < 0) stop = 0;
     for (int i = idx - 4; i >= stop; i -= 2)
         if (t->keys[i] == b->hash) return true;
@@ -462,7 +468,10 @@ static bool is_draw(ThreadData *t, int ply) {
 /* A reversible move reaches a position seen earlier in the search tree. */
 static bool upcoming_repetition(ThreadData *t, const Stack *ss) {
     int span = t->board.half_move_clock;
-    if (span > ss->plies_from_null) span = ss->plies_from_null;
+    /* A null move toggles the side to move but is not a legal game ply. */
+    int since_null = ss->plies_from_null - 1;
+    if (span > since_null) span = since_null;
+    if (span < 0) span = 0;
     if (span > ss->ply - 1) span = ss->ply - 1;
     return board_upcoming_repetition(&t->board, t->keys, t->key_root + ss->ply, span);
 }
@@ -634,6 +643,7 @@ static inline void do_move(ThreadData *t, Stack *ss, Move m, bool tactical) {
     ss->cont = &t->cont[piece][ss->to];
     nnue_push_move(b, m);
     make_move(b, m);
+    tt_prefetch(b->hash);
     t->keys[t->key_root + ss->ply + 1] = b->hash;
     (ss + 1)->plies_from_null = ss->plies_from_null + 1;
     add_node(t);
@@ -647,9 +657,12 @@ static inline void do_null(ThreadData *t, Stack *ss) {
     ss->piece = -1;
     ss->to = 0;
     ss->tactical = false;
-    ss->cont = &t->cont[b->side * 6 + PAWN][0];
+    /* Null moves carry no move context. A real history entry here would
+       leak null-search updates into an unrelated pawn move. */
+    ss->cont = NULL;
     nnue_push_null(b);
     make_null_move(b);
+    tt_prefetch(b->hash);
     t->keys[t->key_root + ss->ply + 1] = b->hash;
     (ss + 1)->plies_from_null = 0;
     add_node(t);
@@ -675,7 +688,7 @@ static int qsearch(ThreadData *t, Stack *ss, int alpha, int beta, bool pv_node) 
     if (should_stop(t)) return 0;
     if (pv_node) t->pv_len[ply] = 0;
     if (ply > t->seldepth) t->seldepth = ply;
-    if (is_draw(t, ply)) return draw_score(t);
+    if (is_draw(t, ss)) return draw_score(t);
     bool in_check = b->checkers != 0;
     if (ply >= MAX_PLY - 1) return in_check ? 0 : adjust_eval(t, raw_eval(t), correction(t, ss));
     if (alpha < 0 && upcoming_repetition(t, ss)) {
@@ -797,7 +810,7 @@ static int negamax(ThreadData *t, Stack *ss, int alpha, int beta, int depth, boo
     bool in_check = b->checkers != 0;
 
     if (!root) {
-        if (is_draw(t, ply)) return draw_score(t);
+        if (is_draw(t, ss)) return draw_score(t);
         if (ply >= MAX_PLY - 1) return in_check ? 0 : adjust_eval(t, raw_eval(t), correction(t, ss));
         alpha = alpha > mated_in(ply) ? alpha : mated_in(ply);
         beta = beta < mate_in(ply + 1) ? beta : mate_in(ply + 1);
@@ -838,7 +851,7 @@ static int negamax(ThreadData *t, Stack *ss, int alpha, int beta, int depth, boo
     /* Tablebases. */
     int syzygy_min = -MATE_SCORE, syzygy_max = MATE_SCORE, wdl;
     if (!root && excluded == NO_MOVE && syzygy_probe_wdl(b, &wdl)) {
-        t->tbhits++;
+        atomic_fetch_add_explicit(&t->tbhits, 1, memory_order_relaxed);
         int tb_score = wdl > 0 ? TB_WIN_SCORE - ply : wdl < 0 ? -TB_WIN_SCORE + ply : draw_score(t);
         int tb_bound = wdl > 0 ? BOUND_LOWER : wdl < 0 ? BOUND_UPPER : BOUND_EXACT;
         if (tb_bound == BOUND_EXACT || (tb_bound == BOUND_LOWER && tb_score >= beta) ||
@@ -1332,7 +1345,7 @@ static void reset_thread(ThreadData *t, const Board *root, const uint64_t *histo
     t->board = *root;
     t->board.ply = 0;
     atomic_store(&t->nodes, 0);
-    t->tbhits = 0;
+    atomic_store_explicit(&t->tbhits, 0, memory_order_relaxed);
     t->seldepth = t->root_depth = t->completed = 0;
     t->score = -INFINITY_SCORE;
     t->best_pv_len = 0;
@@ -1431,11 +1444,14 @@ void search_run(const Board *root, const uint64_t *history, int history_len,
     }
 
     ThreadData *best = select_best_thread();
-    if (best != threads[0] && best->best_pv_len)
-        report(best, best->completed, best->score, BOUND_EXACT, best->best_pv, best->best_pv_len);
-
     Move bm = best->best_pv_len ? validated(&rb, best->best_pv[0]) : NO_MOVE;
     if (bm == NO_MOVE) bm = legal[0];
+    if (!best->best_pv_len || best->best_pv[0] != bm) {
+        best->best_pv[0] = bm;
+        best->best_pv_len = 1;
+    }
+    if (best->completed > 0)
+        report(best, best->completed, best->score, BOUND_EXACT, best->best_pv, best->best_pv_len);
     Move pm = NO_MOVE;
     {
         Board after = rb;
