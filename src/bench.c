@@ -59,8 +59,8 @@ void run_bench(int depth) {
     int saved = search_verbose;
     search_verbose = 0;
     uint64_t total = 0;
+    double search_seconds = 0.0;
     struct timespec a, z;
-    clock_gettime(CLOCK_MONOTONIC, &a);
     for (size_t i = 0; i < sizeof bench_fens / sizeof bench_fens[0]; i++) {
         Board b;
         parse_fen(&b, bench_fens[i]);
@@ -70,12 +70,15 @@ void run_bench(int depth) {
         memset(&lim, 0, sizeof lim);
         lim.depth = depth;
         SearchResult res;
+        clock_gettime(CLOCK_MONOTONIC, &a);
         search_run(&b, NULL, 0, &lim, &res);
+        clock_gettime(CLOCK_MONOTONIC, &z);
         total += res.nodes;
+        search_seconds += (double)(z.tv_sec - a.tv_sec) +
+                          (double)(z.tv_nsec - a.tv_nsec) / 1e9;
     }
-    clock_gettime(CLOCK_MONOTONIC, &z);
-    double secs = (double)(z.tv_sec - a.tv_sec) + (double)(z.tv_nsec - a.tv_nsec) / 1e9;
     search_verbose = saved;
-    printf("%llu nodes %.0f nps\n", (unsigned long long)total, secs > 0 ? total / secs : 0.0);
+    printf("%llu nodes %.0f nps\n", (unsigned long long)total,
+           search_seconds > 0 ? total / search_seconds : 0.0);
     fflush(stdout);
 }
