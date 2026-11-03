@@ -82,3 +82,47 @@ void run_bench(int depth) {
            search_seconds > 0 ? total / search_seconds : 0.0);
     fflush(stdout);
 }
+
+void run_speedtest(int threads, int hash_mb, int seconds) {
+    if (threads < 1) threads = 1;
+    if (threads > 1024) threads = 1024;
+    if (hash_mb < 1) hash_mb = 1;
+    if (hash_mb > 65536) hash_mb = 65536;
+    if (seconds < 1) seconds = 1;
+    if (seconds > 3600) seconds = 3600;
+
+    search_set_threads(threads);
+    if (!tt_alloc(hash_mb)) {
+        printf("info string speedtest could not allocate requested hash\n");
+        return;
+    }
+
+    int saved = search_verbose;
+    search_verbose = 0;
+    const int positions = (int)(sizeof bench_fens / sizeof bench_fens[0]);
+    int slice_ms = seconds * 1000 / positions;
+    if (slice_ms < 1) slice_ms = 1;
+    uint64_t total = 0;
+    struct timespec start, end;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    for (int i = 0; i < positions; i++) {
+        Board b;
+        parse_fen(&b, bench_fens[i]);
+        tt_clear();
+        search_clear();
+        SearchLimits lim;
+        memset(&lim, 0, sizeof lim);
+        lim.movetime = slice_ms;
+        SearchResult res;
+        search_run(&b, NULL, 0, &lim, &res);
+        total += res.nodes;
+    }
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    search_verbose = saved;
+    double elapsed = (double)(end.tv_sec - start.tv_sec) +
+                     (double)(end.tv_nsec - start.tv_nsec) / 1e9;
+    printf("speedtest %d threads %d MB: %llu nodes %.0f nps %.2f s\n",
+           threads, hash_mb, (unsigned long long)total,
+           elapsed > 0.0 ? total / elapsed : 0.0, elapsed);
+    fflush(stdout);
+}

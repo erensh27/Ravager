@@ -168,6 +168,8 @@ typedef struct {
     UndoInfo undo_stack[UNDO_STACK_SIZE];
 } Board;
 
+void evaluate_trace(const Board *b);
+
 #define EMPTY_SQUARE 12
 
 typedef struct {

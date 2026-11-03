@@ -15,6 +15,11 @@ typedef struct {
     int      depth;
     uint64_t nodes;
     int      mate;              /* moves */
+    int      multipv;
+    Move     search_moves[MAX_MOVES];
+    int      search_move_count;
+    bool     search_moves_set;
+    bool     show_wdl;
     bool     infinite;
     bool     ponder;
 } SearchLimits;
@@ -30,6 +35,7 @@ typedef struct {
 void search_init(void);
 void search_set_threads(int n);
 int  search_get_threads(void);
+void search_set_numa_policy(bool enabled);
 void search_clear(void);              /* forget all learned statistics */
 /* Runs a complete search; prints info/bestmove lines when search_verbose. */
 void search_run(const Board *root, const uint64_t *history, int history_len,

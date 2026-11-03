@@ -34,6 +34,7 @@ The network is embedded into the binary at compile time (`EVALFILE`, default `ne
 ## Search
 
 - Iterative deepening, principal variation search, aspiration windows that grow on failure and re-search fail-highs at reduced depth
+- MultiPV root analysis and `searchmoves` restrictions for targeted searches
 - Lockless shared transposition table: three entries per 32-byte bucket, static evaluation stored alongside the score, PV flag, age-aware replacement, huge-page backing
 - Staged move picker: TT move, SEE-filtered good captures, killer, quiet moves, losing captures
 - Move ordering statistics: threat-aware butterfly and piece-to history, 1/2/4-ply continuation history, pawn-structure history, threat-aware capture history, plus bonuses for evading and creating threats
@@ -76,21 +77,32 @@ The network is embedded into the binary at compile time (`EVALFILE`, default `ne
 | Threads | 1 | 1-1024 search threads |
 | Clear Hash | | Empties the transposition table |
 | Ponder | false | Allows pondering (`go ponder` / `ponderhit`) |
+| MultiPV | 1 | Number of principal variations to report, 1-218 |
+| UCI_ShowWDL | false | Adds estimated win/draw/loss permille to search output |
+| NumaPolicy | auto | Binds search workers across available NUMA nodes on Linux; `none` disables binding |
 | UCI_Chess960 | false | Chess960 castling notation |
 | MoveOverhead | 20 | 0-5000 ms reserved per move for communication lag |
 | Use NNUE | true | false selects the handcrafted evaluation |
 | EvalFile | `<empty>` | External network in the same format; empty restores the embedded one |
 | SyzygyPath | `<empty>` | Tablebase directory |
 | SyzygyProbeLimit | 6 | 0-7 pieces |
+| SyzygyProbeDepth | 1 | Minimum search depth for WDL probes, 1-100 |
 | Syzygy50MoveRule | true | Treat cursed wins / blessed losses as draws |
 
-Supported `go` parameters: `wtime btime winc binc movestogo movetime depth nodes mate infinite ponder`.
+WDL output is a display estimate, not a tablebase result.
+
+Supported `go` parameters: `wtime btime winc binc movestogo movetime depth nodes mate infinite ponder searchmoves`.
 
 ## Commands
 
-Besides UCI: `bench [depth]` (fixed-depth node count and speed), `perft <depth>`
-and `d` (board, FEN, key and evaluation). From the shell: `./ravager bench`,
+Besides UCI: `bench [depth]` (fixed-depth node count and speed),
+`speedtest <threads> <hash-mb> <seconds>` (timed search over the built-in
+position suite), `perft <depth>`, `d` (board, FEN, key and evaluation), and
+`eval` (evaluation breakdown). From the shell: `./ravager bench`,
 `./ravager perft 6`.
+
+`make pgo` builds an instrumented binary, trains compiler feedback on the
+fixed-depth benchmark, then rebuilds with profile-guided optimization.
 
 ## License
 

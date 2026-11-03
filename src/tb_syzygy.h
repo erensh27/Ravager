@@ -8,6 +8,7 @@ void syzygy_init(const char *path);      /* (re)load tables from path(s)  */
 bool syzygy_available(void);             /* any table loaded?             */
 
 extern int  syzygy_probe_limit;          /* UCI: only probe at <= N men   */
+extern int  syzygy_probe_depth;           /* UCI: minimum search depth     */
 extern bool syzygy_50move_rule;          /* UCI: respect blessed/cursed   */
 /* Search-time WDL probe. Returns true and sets *wdl to 1 (win), 0 (draw)
  * or -1 (loss) for the side to move, honouring Syzygy50MoveRule. */

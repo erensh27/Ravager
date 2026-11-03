@@ -6,5 +6,6 @@
 uint64_t perft(Board *b, int depth);
 void perft_divide(Board *b, int depth);
 void run_bench(int depth);
+void run_speedtest(int threads, int hash_mb, int seconds);
 
 #endif

@@ -15,6 +15,7 @@ void syzygy_init(const char *path);
 bool syzygy_available(void);
 
 int      syzygy_probe_limit = 6;
+int      syzygy_probe_depth = 1;
 bool     syzygy_50move_rule = true;
 
 static bool tb_ok = false;

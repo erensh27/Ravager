@@ -13,6 +13,9 @@
 
 
 static int hash_mb = DEFAULT_TT_MB;
+static bool ponder_enabled;
+static bool show_wdl;
+static int multipv = 1;
 
 /* ---- game state ---- */
 #define GAME_HISTORY 1024
@@ -37,6 +40,12 @@ static Move parse_legal_move(Board *b, const char *s) {
     Move m = parse_move(b, s);
     if (m == NO_MOVE || !move_is_pseudo_legal(b, m) || !move_is_legal(b, m)) return NO_MOVE;
     return m;
+}
+
+static bool move_list_contains(Move move, const Move *list, int count) {
+    for (int i = 0; i < count; i++)
+        if (list[i] == move) return true;
+    return false;
 }
 
 /* ---- background search thread ---- */
@@ -162,12 +171,36 @@ static void parse_position(char *line) {
 }
 
 /* ---- go ---- */
+static bool is_go_keyword(const char *token) {
+    static const char *keywords[] = {
+        "wtime", "btime", "winc", "binc", "movestogo", "movetime",
+        "depth", "nodes", "mate", "infinite", "ponder", "searchmoves"
+    };
+    for (size_t i = 0; i < sizeof keywords / sizeof keywords[0]; i++)
+        if (!strcmp(token, keywords[i])) return true;
+    return false;
+}
+
 static void parse_go(char *line) {
     SearchLimits lim;
     memset(&lim, 0, sizeof lim);
+    lim.multipv = multipv;
+    lim.show_wdl = show_wdl;
     char *save = NULL;
-    for (char *tok = strtok_r(line, " \t", &save); tok; tok = strtok_r(NULL, " \t", &save)) {
+    char *tok = strtok_r(line, " \t", &save);
+    while (tok) {
         char *arg;
+        if (!strcmp(tok, "searchmoves")) {
+            lim.search_moves_set = true;
+            while ((arg = strtok_r(NULL, " \t", &save)) && !is_go_keyword(arg)) {
+                Move m = parse_legal_move(&main_board, arg);
+                if (m != NO_MOVE && lim.search_move_count < MAX_MOVES &&
+                    !move_list_contains(m, lim.search_moves, lim.search_move_count))
+                    lim.search_moves[lim.search_move_count++] = m;
+            }
+            tok = arg;
+            continue;
+        }
 #define NEXT_INT() ((arg = strtok_r(NULL, " \t", &save)) ? atoll(arg) : 0)
         if      (!strcmp(tok, "wtime"))     lim.time[WHITE] = (int)NEXT_INT();
         else if (!strcmp(tok, "btime"))     lim.time[BLACK] = (int)NEXT_INT();
@@ -179,8 +212,9 @@ static void parse_go(char *line) {
         else if (!strcmp(tok, "nodes"))     lim.nodes = (uint64_t)NEXT_INT();
         else if (!strcmp(tok, "mate"))      lim.mate = (int)NEXT_INT();
         else if (!strcmp(tok, "infinite"))  lim.infinite = true;
-        else if (!strcmp(tok, "ponder"))    lim.ponder = true;
+        else if (!strcmp(tok, "ponder"))    lim.ponder = ponder_enabled;
 #undef NEXT_INT
+        tok = strtok_r(NULL, " \t", &save);
     }
     if (lim.time[WHITE] < 0) lim.time[WHITE] = 0;
     if (lim.time[BLACK] < 0) lim.time[BLACK] = 0;
@@ -195,12 +229,16 @@ static void print_options(void) {
     printf("option name Threads type spin default 1 min 1 max 1024\n");
     printf("option name Clear Hash type button\n");
     printf("option name Ponder type check default false\n");
+    printf("option name MultiPV type spin default 1 min 1 max 218\n");
+    printf("option name UCI_ShowWDL type check default false\n");
+    printf("option name NumaPolicy type combo default auto var auto var none\n");
     printf("option name UCI_Chess960 type check default false\n");
     printf("option name MoveOverhead type spin default %d min 0 max 5000\n", move_overhead_ms);
     printf("option name Use NNUE type check default true\n");
     printf("option name EvalFile type string default <empty>\n");
     printf("option name SyzygyPath type string default <empty>\n");
     printf("option name SyzygyProbeLimit type spin default 6 min 0 max 7\n");
+    printf("option name SyzygyProbeDepth type spin default 1 min 1 max 100\n");
     printf("option name Syzygy50MoveRule type check default true\n");
     printf("uciok\n");
     fflush(stdout);
@@ -234,6 +272,15 @@ static void handle_setoption(const char *line) {
         search_set_threads(n_threads < 1 ? 1 : n_threads > 1024 ? 1024 : n_threads);
     } else if (!strcasecmp(name, "Clear Hash")) {
         tt_clear();
+    } else if (!strcasecmp(name, "Ponder")) {
+        ponder_enabled = on;
+    } else if (!strcasecmp(name, "MultiPV")) {
+        int n = atoi(value);
+        multipv = n < 1 ? 1 : n > 218 ? 218 : n;
+    } else if (!strcasecmp(name, "UCI_ShowWDL")) {
+        show_wdl = on;
+    } else if (!strcasecmp(name, "NumaPolicy")) {
+        search_set_numa_policy(strcasecmp(value, "none") != 0);
     } else if (!strcasecmp(name, "UCI_Chess960")) {
         uci_chess960 = on;
     } else if (!strcasecmp(name, "MoveOverhead") || !strcasecmp(name, "Move Overhead")) {
@@ -252,6 +299,9 @@ static void handle_setoption(const char *line) {
     } else if (!strcasecmp(name, "SyzygyProbeLimit")) {
         int l = atoi(value);
         syzygy_probe_limit = l < 0 ? 0 : l > 7 ? 7 : l;
+    } else if (!strcasecmp(name, "SyzygyProbeDepth")) {
+        int d = atoi(value);
+        syzygy_probe_depth = d < 1 ? 1 : d > 100 ? 100 : d;
     } else if (!strcasecmp(name, "Syzygy50MoveRule")) {
         syzygy_50move_rule = on;
     }
@@ -278,6 +328,23 @@ static void print_board(void) {
     printf("    a   b   c   d   e   f   g   h\n\nFen: %s\nKey: %016llx\nEval: %d (side to move, %s)\n",
            fen, (unsigned long long)main_board.hash, nnue_evaluate_board(&main_board),
            nnue_loaded && nnue_enabled ? nnue_tier : "handcrafted");
+    fflush(stdout);
+}
+
+static void print_evaluation(void) {
+    if (nnue_loaded) nnue_prepare_search(&main_board);
+    int selected = nnue_evaluate_board(&main_board);
+    int handcrafted = evaluate(&main_board);
+    printf("Static evaluation (side to move): %d\n", selected);
+    if (nnue_loaded) {
+        printf("NNUE raw: %d, inference: %s, active: %s\n",
+               nnue_raw_output(&main_board, true), nnue_tier,
+               nnue_enabled ? "yes" : "no");
+    } else {
+        printf("NNUE: unavailable\n");
+    }
+    printf("Handcrafted score (side to move): %d\n", handcrafted);
+    evaluate_trace(&main_board);
     fflush(stdout);
 }
 
@@ -326,7 +393,14 @@ int main(int argc, char *argv[]) {
             else if (!strncmp(cmd, "position", 8)) parse_position(cmd + 8);
             else if (!strncmp(cmd, "perft", 5)) perft_divide(&main_board, atoi(cmd + 5));
             else if (!strcmp(cmd, "d")) print_board();
+            else if (!strcmp(cmd, "eval")) print_evaluation();
             else if (!strcmp(cmd, "bench")) run_bench(0);
+            else if (!strncmp(cmd, "speedtest", 9) && (cmd[9] == 0 || cmd[9] == ' ')) {
+                int n_threads = 1, mb = DEFAULT_TT_MB, seconds = 10;
+                (void)sscanf(cmd + 9, "%d %d %d", &n_threads, &mb, &seconds);
+                hash_mb = mb < 1 ? 1 : mb > 65536 ? 65536 : mb;
+                run_speedtest(n_threads, mb, seconds);
+            }
         }
     }
 

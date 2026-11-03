@@ -180,7 +180,15 @@ static int endgame_scale(const Board *b) {
     return scale;
 }
 
-int evaluate(Board *b) {
+typedef struct {
+    int phase, scale;
+    int material_mg, material_eg;
+    int pawn_mg, pawn_eg;
+    int other_mg, other_eg;
+    int tempo, total;
+} EvalBreakdown;
+
+static int evaluate_internal(Board *b, EvalBreakdown *breakdown) {
     int phase = b->game_phase > TOTAL_PHASE ? TOTAL_PHASE : b->game_phase;
 
     int wksq = lsb(b->pieces[WHITE][KING]);
@@ -190,8 +198,10 @@ int evaluate(Board *b) {
     Score total = pe->score;
 
     /* Material + PST from incremental accumulators */
-    total.mg += b->psqt[WHITE][MG] - b->psqt[BLACK][MG];
-    total.eg += b->psqt[WHITE][EG] - b->psqt[BLACK][EG];
+    int material_mg = b->psqt[WHITE][MG] - b->psqt[BLACK][MG];
+    int material_eg = b->psqt[WHITE][EG] - b->psqt[BLACK][EG];
+    total.mg += material_mg;
+    total.eg += material_eg;
 
     Bitboard wpawn_attacks = ((b->pieces[WHITE][PAWN] & NOT_FILE_H) << 9) |
                              ((b->pieces[WHITE][PAWN] & NOT_FILE_A) << 7);
@@ -534,9 +544,41 @@ int evaluate(Board *b) {
     int score = (mg * phase + eg * (TOTAL_PHASE - phase)) / TOTAL_PHASE;
 
     /* Tempo: from the point of view of the side to move */
-    score += TEMPO[MG] * phase / TOTAL_PHASE + TEMPO[EG] * (TOTAL_PHASE - phase) / TOTAL_PHASE;
+    int tempo = TEMPO[MG] * phase / TOTAL_PHASE + TEMPO[EG] * (TOTAL_PHASE - phase) / TOTAL_PHASE;
+    score += tempo;
+
+    if (breakdown) {
+        breakdown->phase = phase;
+        breakdown->scale = scale;
+        breakdown->material_mg = material_mg;
+        breakdown->material_eg = material_eg;
+        breakdown->pawn_mg = pe->score.mg;
+        breakdown->pawn_eg = pe->score.eg;
+        breakdown->other_mg = mg - material_mg - pe->score.mg;
+        breakdown->other_eg = total.eg - material_eg - pe->score.eg;
+        breakdown->tempo = tempo;
+        breakdown->total = score;
+    }
 
     return (b->side == WHITE) ? score : -score;
+}
+
+int evaluate(Board *b) { return evaluate_internal(b, NULL); }
+
+void evaluate_trace(const Board *b) {
+    EvalBreakdown d;
+    int score = evaluate_internal((Board *)b, &d);
+    int sign = b->side == WHITE ? 1 : -1;
+    printf("Handcrafted evaluation breakdown (white perspective)\n");
+    printf("  Material and piece-square: MG %+d EG %+d\n",
+           d.material_mg * sign, d.material_eg * sign);
+    printf("  Pawn structure:            MG %+d EG %+d\n",
+           d.pawn_mg * sign, d.pawn_eg * sign);
+    printf("  Other positional terms:    MG %+d EG %+d\n",
+           d.other_mg * sign, d.other_eg * sign);
+    printf("  Phase: %d/%d, endgame scale: %d/64\n", d.phase, TOTAL_PHASE, d.scale);
+    printf("  Tempo: %+d\n", d.tempo * sign);
+    printf("  Final handcrafted score: %+d\n", score * sign);
 }
 
 bool is_insufficient_material(const Board *b) {

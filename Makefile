@@ -8,6 +8,7 @@
 CC       ?= gcc
 CFLAGS   ?= -O3 -std=c11
 override CFLAGS += -Wall -Wextra -Wno-unused-parameter -Wno-missing-braces -pthread
+override CFLAGS += $(EXTRA_CFLAGS)
 CPPFLAGS += -Isrc -Innue
 LDLIBS   += -lm
 
@@ -51,8 +52,22 @@ windows: $(SRC) $(wildcard src/*.h src/tb/*.h nnue/*.h) $(EVALFILE)
 bench: $(TARGET)
 	./$(TARGET) bench
 
-clean:
+pgo:
+	$(MAKE) clean
+	$(MAKE) EXTRA_CFLAGS="-fprofile-generate" $(TARGET)
+	./$(TARGET) bench 10
+	$(MAKE) clean-build
+	$(MAKE) EXTRA_CFLAGS="-fprofile-use -fprofile-correction" $(TARGET)
+	$(MAKE) clean-profiles
+
+clean-build:
 	rm -f $(OBJ) $(DEP) $(TARGET) $(RELEASE) $(WINDOWS)
 
+clean-profiles:
+	rm -f src/*.gcda src/*.gcno nnue/*.gcda nnue/*.gcno
+
+clean:
+	rm -f $(OBJ) $(DEP) $(TARGET) $(RELEASE) $(WINDOWS) src/*.gcda src/*.gcno nnue/*.gcda nnue/*.gcno
+
 -include $(DEP)
-.PHONY: all release windows bench clean
+.PHONY: all release windows bench pgo clean-build clean-profiles clean
