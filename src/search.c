@@ -634,6 +634,7 @@ static inline void do_move(ThreadData *t, Stack *ss, Move m, bool tactical) {
     ss->cont = &t->cont[piece][ss->to];
     nnue_push_move(b, m);
     make_move(b, m);
+    tt_prefetch(b->hash);
     t->keys[t->key_root + ss->ply + 1] = b->hash;
     (ss + 1)->plies_from_null = ss->plies_from_null + 1;
     add_node(t);
@@ -650,6 +651,7 @@ static inline void do_null(ThreadData *t, Stack *ss) {
     ss->cont = &t->cont[b->side * 6 + PAWN][0];
     nnue_push_null(b);
     make_null_move(b);
+    tt_prefetch(b->hash);
     t->keys[t->key_root + ss->ply + 1] = b->hash;
     (ss + 1)->plies_from_null = 0;
     add_node(t);
