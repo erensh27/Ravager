@@ -59,7 +59,8 @@ enum {
     LMR_CORR = 448, LMR_ALPHA_RAISE = 384, LMR_OFFSET = 226, LMR_TTPV_DEPTH = 2057,
     LMR_DEPTH_OFFSET = -400, LMR_CUTOFFS = 900,
     MAIN_STAT = 26, CONT1_STAT = 37, CONT2_STAT = 33, CONT4_STAT = 13, TACT_STAT = 43,
-    CORR_PAWN_W = 1890, CORR_MINOR_W = 1292, CORR_NONPAWN_W = 1887, CORR_CONT_W = 1942,
+    CORR_PAWN_W = 1890, CORR_MINOR_W = 1292, CORR_MAJOR_W = 1461,
+    CORR_NONPAWN_W = 1887, CORR_CONT_W = 1942,
     POLICY_SCALE = 227, POLICY_OFFSET = -16, POLICY_MAX = 94,
     HINDSIGHT_EXT = 1419, HINDSIGHT_RED = 2494, HINDSIGHT_RED_EVAL = 128,
     OPTIMISM_OFFSET = 196, OPTIMISM_MAT_BASE = 1869, MATERIAL_SCALE_BASE = 856,
@@ -127,6 +128,7 @@ typedef struct {
     int16_t  corr_pawn[CORR_SIZE][2];
     int16_t  corr_nonpawn[2][CORR_SIZE][2];
     int16_t  corr_minor[CORR_SIZE][2];
+    int16_t  corr_major[CORR_SIZE][2];
     int16_t  corr_cont[CORR_SIZE][2];
 } ThreadData;
 
@@ -396,6 +398,7 @@ static int correction(const ThreadData *t, const Stack *ss) {
     int64_t adj = 0;
     adj += (int64_t)CORR_PAWN_W * corr_sign(b->pawn_key) * t->corr_pawn[b->pawn_key % CORR_SIZE][us];
     adj += (int64_t)CORR_MINOR_W * corr_sign(b->minor_key) * t->corr_minor[b->minor_key % CORR_SIZE][us];
+    adj += (int64_t)CORR_MAJOR_W * corr_sign(b->major_key) * t->corr_major[b->major_key % CORR_SIZE][us];
     for (int c = 0; c < 2; c++)
         adj += (int64_t)CORR_NONPAWN_W * corr_sign(b->nonpawn_key[c]) *
                t->corr_nonpawn[c][b->nonpawn_key[c] % CORR_SIZE][us];
@@ -419,6 +422,7 @@ static void update_correction(ThreadData *t, const Stack *ss, int depth, int com
 #define CORR_UPDATE(slot, key) do { e = (slot); int sb = bonus * corr_sign(key); gravity(e, *e, sb, CORR_MAX); } while (0)
     CORR_UPDATE(corr_slot(t->corr_pawn, b->pawn_key, us), b->pawn_key);
     CORR_UPDATE(corr_slot(t->corr_minor, b->minor_key, us), b->minor_key);
+    CORR_UPDATE(corr_slot(t->corr_major, b->major_key, us), b->major_key);
     for (int c = 0; c < 2; c++)
         CORR_UPDATE(corr_slot(t->corr_nonpawn[c], b->nonpawn_key[c], us), b->nonpawn_key[c]);
     if (ss->ply > 2) { uint64_t k = cont_corr_key(ss, 2); CORR_UPDATE(corr_slot(t->corr_cont, k, us), k); }
@@ -454,8 +458,12 @@ static bool is_draw(ThreadData *t, int ply) {
     int idx = t->key_root + ply;
     int stop = idx - b->half_move_clock;
     if (stop < 0) stop = 0;
-    for (int i = idx - 4; i >= stop; i -= 2)
-        if (t->keys[i] == b->hash) return true;
+    int old_repeats = 0;
+    for (int i = idx - 4; i >= stop; i -= 2) {
+        if (t->keys[i] != b->hash) continue;
+        if (i - t->key_root <= ply) return true;
+        if (++old_repeats >= 2) return true;
+    }
     return false;
 }
 
@@ -463,8 +471,7 @@ static bool is_draw(ThreadData *t, int ply) {
 static bool upcoming_repetition(ThreadData *t, const Stack *ss) {
     int span = t->board.half_move_clock;
     if (span > ss->plies_from_null) span = ss->plies_from_null;
-    if (span > ss->ply - 1) span = ss->ply - 1;
-    return board_upcoming_repetition(&t->board, t->keys, t->key_root + ss->ply, span);
+    return board_upcoming_repetition(&t->board, t->keys, t->key_root + ss->ply, span, ss->ply);
 }
 
 /* ------------------------------------------------------------------ */
@@ -738,7 +745,7 @@ static int qsearch(ThreadData *t, Stack *ss, int alpha, int beta, bool pv_node) 
         }
         do_move(t, ss, m, tactical);
         (ss + 1)->ply = ply + 1;
-        if (best_score > -TB_WIN_BOUND) p.skip_quiets = true;
+        if (!in_check && best_score > -TB_WIN_BOUND) p.skip_quiets = true;
         moves_made++;
         int score = -qsearch(t, ss + 1, -beta, -alpha, pv_node);
         undo_move(t, m);
@@ -803,6 +810,10 @@ static int negamax(ThreadData *t, Stack *ss, int alpha, int beta, int depth, boo
         beta = beta < mate_in(ply + 1) ? beta : mate_in(ply + 1);
         if (alpha >= beta) return alpha;
         if (alpha < 0 && upcoming_repetition(t, ss)) {
+            if (!in_check) {
+                int fresh = adjust_eval(t, raw_eval(t), correction(t, ss));
+                if (fresh < 0) update_correction(t, ss, depth, 0, -fresh);
+            }
             alpha = 0;
             if (alpha >= beta) return alpha;
         }
@@ -971,20 +982,20 @@ static int negamax(ThreadData *t, Stack *ss, int alpha, int beta, int depth, boo
             int base_depth = clampi(depth_base, 0, depth - 1);
             int ada_beta = clampi(pc_beta + (base_depth - pc_depth) * PROBCUT_ADA_DIV,
                                   -TB_WIN_BOUND + 1, TB_WIN_BOUND - 1);
-            if (value >= pc_beta && pc_depth > 0) {
+            int cut_depth = pc_depth, cut_beta = ada_beta;
+            if (value >= pc_beta) {
                 value = -negamax(t, ss + 1, -ada_beta, -ada_beta + 1, pc_depth, false, false);
-                if (value < ada_beta && pc_beta < ada_beta) {
-                    pc_depth = base_depth;
-                    value = -negamax(t, ss + 1, -pc_beta, -pc_beta + 1, pc_depth, false, false);
-                } else {
-                    pc_beta = ada_beta;
+                if (value < ada_beta && pc_depth < base_depth) {
+                    cut_depth = base_depth;
+                    cut_beta = pc_beta;
+                    value = -negamax(t, ss + 1, -pc_beta, -pc_beta + 1, base_depth, false, false);
                 }
             }
             undo_move(t, m);
             if (stopped()) return 0;
-            if (value >= pc_beta) {
-                tt_store(b->hash, ply, m, value, raw, BOUND_LOWER, pc_depth + 1, ss->ttpv);
-                return is_decisive(value) ? value : value - (pc_beta - beta);
+            if (value >= cut_beta) {
+                tt_store(b->hash, ply, m, value, raw, BOUND_LOWER, cut_depth + 1, ss->ttpv);
+                return is_decisive(value) ? value : value - (cut_beta - beta);
             }
         }
     }
@@ -1057,12 +1068,12 @@ static int negamax(ThreadData *t, Stack *ss, int alpha, int beta, int depth, boo
                 p.skip_quiets = true;
                 continue;
             }
-            if (quiet && lmr_depth < 6 && static_eval + lmr_depth * FUT_MUL + FUT_BASE + stat / 128 <= alpha &&
+            if (quiet && lmr_depth < 12 && static_eval + lmr_depth * FUT_MUL + FUT_BASE + stat / 128 <= alpha &&
                 !move_gives_check(b, m))
                 p.skip_quiets = true;
         }
         if (!root && best_score > -TB_WIN_BOUND && p.stage > ST_GOOD_NOISY &&
-            !see_ge(b, m, see_table[quiet] - stat * SEE_HIST_MUL / 1024))
+            !see_ge(b, m, see_table[quiet && !move_gives_check(b, m)] - stat * SEE_HIST_MUL / 1024))
             continue;
 
         if (quiet) { if (n_quiets < MAX_MOVES) quiets[n_quiets++] = m; }
@@ -1080,6 +1091,7 @@ static int negamax(ThreadData *t, Stack *ss, int alpha, int beta, int depth, boo
             ss->reduction = 0;
             score = -negamax(t, ss + 1, -beta, -alpha, depth + ext - 1, !pv_node && !cut_node, pv_node);
         } else {
+            if (pv_node) t->pv_len[ply + 1] = 0;
             int r;
             if (depth > 2 && moves_made > 1 + root) {
                 r = lmr - (b->checkers != 0) * LMR_CHECK;
@@ -1486,6 +1498,7 @@ static void clear_thread(ThreadData *t) {
     memset(t->corr_pawn, 0, sizeof t->corr_pawn);
     memset(t->corr_nonpawn, 0, sizeof t->corr_nonpawn);
     memset(t->corr_minor, 0, sizeof t->corr_minor);
+    memset(t->corr_major, 0, sizeof t->corr_major);
     memset(t->corr_cont, 0, sizeof t->corr_cont);
 }
 

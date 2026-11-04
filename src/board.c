@@ -51,6 +51,7 @@ static inline void toggle_keys(Board *b, int color, int piece, int sq) {
     else {
         b->nonpawn_key[color] ^= k;
         if (piece == KNIGHT || piece == BISHOP || piece == KING) b->minor_key ^= k;
+        if (piece == KING || piece == QUEEN || piece == ROOK) b->major_key ^= k;
     }
 }
 
@@ -513,8 +514,10 @@ static void init_cuckoo(void) {
 
 /* keys[idx] is the current position, keys[idx - i] the one i plies earlier.
  * True if a reversible move leads to a position already on the path within
- * the last `span` plies (span may not cross an irreversible or null move). */
-bool board_upcoming_repetition(const Board *b, const uint64_t *keys, int idx, int span) {
+ * the last `span` plies (span may not cross an irreversible or null move).
+ * Repetitions inside the search tree count as twofold; older positions must
+ * have occurred twice already. */
+bool board_upcoming_repetition(const Board *b, const uint64_t *keys, int idx, int span, int ply) {
     if (span < 3) return false;
     if (span > idx) span = idx;
     for (int i = 3; i <= span; i += 2) {
@@ -525,7 +528,10 @@ bool board_upcoming_repetition(const Board *b, const uint64_t *keys, int idx, in
             if (cuckoo_keys[j] != diff) continue;
         }
         Move m = cuckoo_moves[j];
-        if (!(between_table[move_from(m)][move_to(m)] & b->occ_all)) return true;
+        if (between_table[move_from(m)][move_to(m)] & b->occ_all) continue;
+        if (i <= ply) return true;
+        for (int k = i + 2; k <= span; k += 2)
+            if (keys[idx - k] == keys[idx - i]) return true;
     }
     return false;
 }

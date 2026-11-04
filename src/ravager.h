@@ -161,6 +161,7 @@ typedef struct {
     uint64_t pawn_key;         /* pawns of both colours */
     uint64_t nonpawn_key[2];   /* non-pawn pieces (incl. king) per colour */
     uint64_t minor_key;        /* knights, bishops and kings of both colours */
+    uint64_t major_key;        /* rooks, queens and kings of both colours */
     Bitboard checkers;         /* enemy pieces giving check to the side to move */
     Bitboard pinned;           /* side-to-move pieces pinned to their king */
     int      ply;              /* index into undo_stack */
@@ -198,7 +199,7 @@ Bitboard all_attackers_to(const Board *b, int sq, Bitboard occ);
 bool see_ge(const Board *b, Move m, int threshold); /* SEE >= threshold */
 extern const int see_values[7];
 void board_update_check_info(Board *b);
-bool board_upcoming_repetition(const Board *b, const uint64_t *keys, int idx, int span);
+bool board_upcoming_repetition(const Board *b, const uint64_t *keys, int idx, int span, int ply);
 int  evaluate(Board *b);
 void board_init_all(void);   /* init every table */
 
