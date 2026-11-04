@@ -78,6 +78,7 @@ static const HistConf H_TACT  = {104, 328, 1248, 29, 394, 1122};
 #define CORR_SIZE       16384
 #define CORR_MAX        1024
 #define PAWN_HIST_SIZE  1024
+#define LOW_PLY_SIZE    5
 #define KEY_HISTORY     1024
 #define WINNING_BONUS   10000000
 #define MIN_WINNING     (WINNING_BONUS - MAX_HISTORY * 4)
@@ -122,6 +123,7 @@ typedef struct {
     int16_t  from_to[2][2][2][64][64];   /* [side][from threatened][to threatened] */
     int16_t  piece_to[2][2][12][64];
     int16_t  tactical[2][6][12][64];     /* [to threatened][captured][piece][to] */
+    int16_t  low_ply[LOW_PLY_SIZE][64][64];
     PieceTo  cont[12][64];
     PieceTo  pawn_hist[PAWN_HIST_SIZE];
     int16_t  corr_pawn[CORR_SIZE][2];
@@ -360,6 +362,10 @@ static void update_quiet_single(ThreadData *t, Stack *ss, Move m, int depth, boo
     update_cont(ss, piece, to, depth, good);
     int16_t *ph = &t->pawn_hist[pawn_index(b)][piece][to];
     gravity(ph, *ph, hist_delta(&H_PAWN, depth, good), MAX_HISTORY);
+    if (ss->ply < LOW_PLY_SIZE) {
+        int16_t *lp = &t->low_ply[ss->ply][from][to];
+        gravity(lp, *lp, hist_delta(&H_MAIN, depth, good) * 712 / 1024, MAX_HISTORY);
+    }
 }
 
 static void update_tactical(ThreadData *t, Stack *ss, const Move *moves, int n, Move best, int depth) {
@@ -519,6 +525,8 @@ static void score_quiets(const ThreadData *t, const Stack *ss, MoveList *ml, int
         if (c1) s += (*c1)[piece][to];
         if (c2) s += (*c2)[piece][to];
         s += (*ph)[piece][to];
+        if (ss->ply < LOW_PLY_SIZE)
+            s += 8 * t->low_ply[ss->ply][from][to] / (ss->ply + 1);
         if (move_gives_check(b, m) && see_ge(b, m, -QUIET_CHECK_SEE)) s += 10000;
         switch (pt) {
             case PAWN:
@@ -1340,6 +1348,7 @@ static void reset_thread(ThreadData *t, const Board *root, const uint64_t *histo
     memset(t->root_nodes, 0, sizeof t->root_nodes);
     memset(t->stack, 0, sizeof t->stack);
     memset(t->pv_len, 0, sizeof t->pv_len);
+    memset(t->low_ply, 0, sizeof t->low_ply);
     for (int i = 0; i < MAX_PLY + STACK_OFFSET + 4; i++) {
         t->stack[i].piece = -1;
         t->stack[i].static_eval = t->stack[i].eval = SCORE_NONE;
