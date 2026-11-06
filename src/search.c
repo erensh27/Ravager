@@ -506,7 +506,7 @@ static void score_noisy(const ThreadData *t, const Stack *ss, MoveList *ml, int 
 static void score_quiets(const ThreadData *t, const Stack *ss, MoveList *ml, int start) {
     const Board *b = &t->board;
     int us = b->side, them = us ^ 1;
-    const PieceTo *c1 = (ss - 1)->cont, *c2 = (ss - 2)->cont;
+    const PieceTo *c1 = (ss - 1)->cont, *c2 = (ss - 2)->cont, *c4 = (ss - 4)->cont;
     const PieceTo *ph = &t->pawn_hist[pawn_index(b)];
     Bitboard their_king = b->pieces[them][KING], their_queens = b->pieces[them][QUEEN];
     Bitboard their_rooks = b->pieces[them][ROOK];
@@ -518,6 +518,7 @@ static void score_quiets(const ThreadData *t, const Stack *ss, MoveList *ml, int
         int s = main_history(t, ss, us, from, to, piece);
         if (c1) s += (*c1)[piece][to];
         if (c2) s += (*c2)[piece][to];
+        if (c4) s += (*c4)[piece][to];
         s += (*ph)[piece][to];
         if (move_gives_check(b, m) && see_ge(b, m, -QUIET_CHECK_SEE)) s += 10000;
         switch (pt) {
@@ -634,6 +635,7 @@ static inline void do_move(ThreadData *t, Stack *ss, Move m, bool tactical) {
     ss->cont = &t->cont[piece][ss->to];
     nnue_push_move(b, m);
     make_move(b, m);
+    tt_prefetch(b->hash);
     t->keys[t->key_root + ss->ply + 1] = b->hash;
     (ss + 1)->plies_from_null = ss->plies_from_null + 1;
     add_node(t);
@@ -690,7 +692,8 @@ static int qsearch(ThreadData *t, Stack *ss, int alpha, int beta, bool pv_node) 
         tt_move = validated(b, hit.move);
         if (hit.move != NO_MOVE && tt_move == NO_MOVE) tt_hit = false;
     }
-    if (tt_hit && !pv_node && hit.score != SCORE_NONE && b->half_move_clock < 90 &&
+    if (tt_hit && !pv_node && hit.bound != BOUND_NONE && hit.score != SCORE_NONE &&
+        b->half_move_clock < 90 &&
         (hit.bound == BOUND_EXACT || (hit.bound == BOUND_LOWER && hit.score >= beta) ||
          (hit.bound == BOUND_UPPER && hit.score <= alpha)))
         return hit.score;
@@ -705,7 +708,7 @@ static int qsearch(ThreadData *t, Stack *ss, int alpha, int beta, bool pv_node) 
         if (tt_hit) {
             raw = hit.eval != SCORE_NONE ? hit.eval : raw_eval(t);
             stand_pat = ss->static_eval = adjust_eval(t, raw, corr);
-            if (hit.score != SCORE_NONE && !is_decisive(hit.score) &&
+            if (hit.bound != BOUND_NONE && hit.score != SCORE_NONE && !is_decisive(hit.score) &&
                 (hit.bound == BOUND_EXACT || (hit.bound == BOUND_UPPER && hit.score < stand_pat) ||
                  (hit.bound == BOUND_LOWER && hit.score > stand_pat)))
                 stand_pat = hit.score;
@@ -819,7 +822,8 @@ static int negamax(ThreadData *t, Stack *ss, int alpha, int beta, int depth, boo
     }
     if (!tt_hit) { hit.score = SCORE_NONE; hit.eval = SCORE_NONE; hit.depth = -1; hit.bound = BOUND_NONE; hit.pv = false; }
 
-    if (tt_hit && !pv_node && hit.score != SCORE_NONE && b->half_move_clock < 90) {
+    if (tt_hit && !pv_node && hit.bound != BOUND_NONE && hit.score != SCORE_NONE &&
+        b->half_move_clock < 90) {
         bool proven = (hit.score >= TB_WIN_BOUND && hit.bound == BOUND_LOWER && hit.score >= beta) ||
                       (hit.score <= -TB_WIN_BOUND && hit.bound == BOUND_UPPER && hit.score <= alpha);
         if ((proven || hit.depth >= depth + (hit.score >= beta)) &&
@@ -861,7 +865,7 @@ static int negamax(ThreadData *t, Stack *ss, int alpha, int beta, int depth, boo
     } else if (tt_hit) {
         raw = hit.eval != SCORE_NONE ? hit.eval : raw_eval(t);
         static_eval = eval = adjust_eval(t, raw, corr);
-        if (hit.score != SCORE_NONE &&
+        if (hit.bound != BOUND_NONE && hit.score != SCORE_NONE &&
             (hit.bound == BOUND_EXACT || (hit.bound == BOUND_UPPER && hit.score < static_eval) ||
              (hit.bound == BOUND_LOWER && hit.score > static_eval)))
             eval = hit.score;
@@ -874,7 +878,8 @@ static int negamax(ThreadData *t, Stack *ss, int alpha, int beta, int depth, boo
     ss->eval = eval;
 
     int complexity = 0;
-    if (tt_hit && static_eval != SCORE_NONE && hit.score != SCORE_NONE && !is_decisive(hit.score) &&
+    if (tt_hit && hit.bound != BOUND_NONE && static_eval != SCORE_NONE &&
+        hit.score != SCORE_NONE && !is_decisive(hit.score) &&
         (hit.bound == BOUND_EXACT || (hit.bound == BOUND_UPPER && hit.score < static_eval) ||
          (hit.bound == BOUND_LOWER && hit.score > static_eval)))
         complexity = abs(static_eval - hit.score);
