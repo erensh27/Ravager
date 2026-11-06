@@ -5,9 +5,9 @@
  * transposition table is shared (lazy SMP).
  *
  * Move ordering: staged picker (TT move, SEE-filtered captures, killer,
- * quiets, losing captures) scored by threat-aware butterfly/piece-to
- * history, 1/2/4-ply continuation history, pawn-structure history and
- * capture history.
+ * counter-move, second killer, quiets, losing captures) scored by
+ * threat-aware butterfly/piece-to history, 1/2/4-ply continuation history,
+ * pawn-structure history, capture history and recapture bonuses.
  *
  * Static evaluation: network output scaled by remaining material, damped by
  * the fifty-move counter and corrected by pawn, non-pawn, minor-piece and
@@ -17,9 +17,11 @@
  * verification, ProbCut with adaptive depth, internal iterative reduction,
  * hindsight depth adjustment, late move pruning, futility pruning, history
  * pruning, SEE pruning, singular/double/triple and negative extensions,
- * multi-cut, and history/node-type aware late move reductions with
- * deeper/shallower re-searches. Quiescence uses stand-pat, SEE ordering and
- * futility pruning, and searches all evasions when in check. */
+ * recapture extensions, multi-cut, and history/node-type aware late move
+ * reductions with deeper/shallower re-searches. Quiescence uses stand-pat,
+ * SEE ordering and futility pruning, and searches all evasions when in
+ * check. Time management scales with best-move stability, node share,
+ * failed-low counts, forced-move evidence and score volatility. */
 
 #define _POSIX_C_SOURCE 200809L
 
@@ -64,6 +66,8 @@ enum {
     HINDSIGHT_EXT = 1419, HINDSIGHT_RED = 2494, HINDSIGHT_RED_EVAL = 128,
     OPTIMISM_OFFSET = 196, OPTIMISM_MAT_BASE = 1869, MATERIAL_SCALE_BASE = 856,
     QUIET_CHECK_SEE = 175,
+    LMR_COUNTER = 550, LMR_KILLER2 = 380, RECAP_BONUS = 7000,
+    RECAP_EXT_DEPTH = 4,
 };
 
 typedef struct { int bonus_mul, bonus_off, bonus_max, malus_mul, malus_off, malus_max; } HistConf;
@@ -89,7 +93,7 @@ static const HistConf H_TACT  = {104, 328, 1248, 29, 394, 1122};
 typedef int16_t PieceTo[12][64];
 
 typedef struct {
-    Move     move, excluded, killer;
+    Move     move, excluded, killer, killer2;
     int      piece;            /* moved piece (colour*6+type), -1 for null */
     int      to;
     PieceTo *cont;             /* continuation entry of the move made here */
@@ -124,6 +128,7 @@ typedef struct {
     int16_t  tactical[2][6][12][64];     /* [to threatened][captured][piece][to] */
     PieceTo  cont[12][64];
     PieceTo  pawn_hist[PAWN_HIST_SIZE];
+    Move     counter[12][64];            /* indexed by previous move's piece and target */
     int16_t  corr_pawn[CORR_SIZE][2];
     int16_t  corr_nonpawn[2][CORR_SIZE][2];
     int16_t  corr_minor[CORR_SIZE][2];
@@ -149,6 +154,8 @@ static bool  time_managed;            /* clock-based ("dynamic") limits */
 static double opt_time, hard_time, max_time, base_opt, base_hard;
 static int   tm_stability, tm_failed_low;
 static double tm_forced;              /* time multiplier once the best move is shown forced */
+static double tm_vol;                 /* score-volatility multiplier */
+static int   tm_prev_score;
 static Move  tm_prev_best;
 
 static int64_t elapsed_ms(void) {
@@ -205,6 +212,8 @@ static void setup_time(const Board *b) {
     tm_stability = 0;
     tm_failed_low = 0;
     tm_forced = 1.0;
+    tm_vol = 1.0;
+    tm_prev_score = SCORE_NONE;
     tm_prev_best = NO_MOVE;
 }
 
@@ -214,6 +223,7 @@ static void tm_rescale(double node_fraction) {
     mult *= 1.0 + 0.34 * tm_failed_low;
     if (node_fraction >= 0) mult *= (1.62 - node_fraction) * 1.40;
     mult *= tm_forced;
+    mult *= tm_vol;
     opt_time = base_opt * mult;
     hard_time = base_hard * mult;
     if (opt_time > max_time) opt_time = max_time;
@@ -250,8 +260,7 @@ static inline int  mated_in(int ply) { return -MATE_SCORE + ply; }
 static inline int  mate_in(int ply) { return MATE_SCORE - ply; }
 
 static inline void add_node(ThreadData *t) {
-    atomic_store_explicit(&t->nodes, atomic_load_explicit(&t->nodes, memory_order_relaxed) + 1,
-                          memory_order_relaxed);
+    atomic_fetch_add_explicit(&t->nodes, 1, memory_order_relaxed);
 }
 
 static inline int draw_score(ThreadData *t) {
@@ -470,23 +479,25 @@ static bool upcoming_repetition(ThreadData *t, const Stack *ss) {
 /* ------------------------------------------------------------------ */
 /* Move picker. */
 
-typedef enum { ST_TT, ST_GEN_NOISY, ST_GOOD_NOISY, ST_KILLER, ST_GEN_QUIET, ST_REMAINING, ST_DONE } Stage;
+typedef enum { ST_TT, ST_GEN_NOISY, ST_GOOD_NOISY, ST_KILLER, ST_COUNTER, ST_KILLER2, ST_GEN_QUIET, ST_REMAINING, ST_DONE } Stage;
 
 typedef struct {
     MoveList list;
     int   idx;
     Stage stage;
-    Move  tt_move, killer;
+    Move  tt_move, killer, counter, killer2;
     bool  skip_quiets;
     int   see_threshold;
 } Picker;
 
-static void picker_init(Picker *p, Move tt_move, Move killer, int see_threshold) {
+static void picker_init(Picker *p, Move tt_move, Move killer, Move counter, Move killer2, int see_threshold) {
     p->list.count = 0;
     p->idx = 0;
     p->stage = ST_TT;
     p->tt_move = tt_move;
     p->killer = killer;
+    p->counter = counter;
+    p->killer2 = killer2;
     p->skip_quiets = false;
     p->see_threshold = see_threshold;
 }
@@ -494,19 +505,22 @@ static void picker_init(Picker *p, Move tt_move, Move killer, int see_threshold)
 static void score_noisy(const ThreadData *t, const Stack *ss, MoveList *ml, int start) {
     static const int mvv[6] = {0, 2400, 2400, 4800, 9600, 0};
     const Board *b = &t->board;
+    int prev_to = (ss - 1)->to;
     for (int i = start; i < ml->count; i++) {
         Move m = ml->moves[i];
         if (move_is_promo(m) && move_promo(m) != PROMO_QUEEN) { ml->scores[i] = -WINNING_BONUS; continue; }
         int to = move_to(m), cap = captured_type(b, m);
-        ml->scores[i] = WINNING_BONUS + mvv[cap] +
+        int s = WINNING_BONUS + mvv[cap] +
                         t->tactical[has_bit(ss->threats, to)][cap][b->piece_on[move_from(m)]][to];
+        if (to == prev_to) s += RECAP_BONUS;
+        ml->scores[i] = s;
     }
 }
 
 static void score_quiets(const ThreadData *t, const Stack *ss, MoveList *ml, int start) {
     const Board *b = &t->board;
     int us = b->side, them = us ^ 1;
-    const PieceTo *c1 = (ss - 1)->cont, *c2 = (ss - 2)->cont;
+    const PieceTo *c1 = (ss - 1)->cont, *c2 = (ss - 2)->cont, *c4 = (ss - 4)->cont;
     const PieceTo *ph = &t->pawn_hist[pawn_index(b)];
     Bitboard their_king = b->pieces[them][KING], their_queens = b->pieces[them][QUEEN];
     Bitboard their_rooks = b->pieces[them][ROOK];
@@ -518,6 +532,7 @@ static void score_quiets(const ThreadData *t, const Stack *ss, MoveList *ml, int
         int s = main_history(t, ss, us, from, to, piece);
         if (c1) s += (*c1)[piece][to];
         if (c2) s += (*c2)[piece][to];
+        if (c4) s += (*c4)[piece][to];
         s += (*ph)[piece][to];
         if (move_gives_check(b, m) && see_ge(b, m, -QUIET_CHECK_SEE)) s += 10000;
         switch (pt) {
@@ -591,10 +606,24 @@ static Move picker_next(Picker *p, ThreadData *t, const Stack *ss) {
         break;
     }
     case ST_KILLER:
-        p->stage = ST_GEN_QUIET;
+        p->stage = ST_COUNTER;
         if (!p->skip_quiets && p->killer != NO_MOVE && p->killer != p->tt_move &&
             !move_is_noisy(b, p->killer) && move_is_pseudo_legal(b, p->killer))
             return p->killer;
+        break;
+    case ST_COUNTER:
+        p->stage = ST_KILLER2;
+        if (!p->skip_quiets && p->counter != NO_MOVE && p->counter != p->tt_move &&
+            p->counter != p->killer && !move_is_noisy(b, p->counter) &&
+            move_is_pseudo_legal(b, p->counter))
+            return p->counter;
+        break;
+    case ST_KILLER2:
+        p->stage = ST_GEN_QUIET;
+        if (!p->skip_quiets && p->killer2 != NO_MOVE && p->killer2 != p->tt_move &&
+            p->killer2 != p->killer && p->killer2 != p->counter &&
+            !move_is_noisy(b, p->killer2) && move_is_pseudo_legal(b, p->killer2))
+            return p->killer2;
         break;
     case ST_GEN_QUIET:
         p->stage = ST_REMAINING;
@@ -612,7 +641,7 @@ static Move picker_next(Picker *p, ThreadData *t, const Stack *ss) {
         p->idx++;
         if (p->skip_quiets && p->list.scores[i] < MIN_WINNING) { p->stage = ST_DONE; return NO_MOVE; }
         Move m = p->list.moves[i];
-        if (m == p->tt_move || m == p->killer) continue;
+        if (m == p->tt_move || m == p->killer || m == p->counter || m == p->killer2) continue;
         return m;
     }
     case ST_DONE:
@@ -634,6 +663,7 @@ static inline void do_move(ThreadData *t, Stack *ss, Move m, bool tactical) {
     ss->cont = &t->cont[piece][ss->to];
     nnue_push_move(b, m);
     make_move(b, m);
+    tt_prefetch(b->hash);
     t->keys[t->key_root + ss->ply + 1] = b->hash;
     (ss + 1)->plies_from_null = ss->plies_from_null + 1;
     add_node(t);
@@ -650,6 +680,7 @@ static inline void do_null(ThreadData *t, Stack *ss) {
     ss->cont = &t->cont[b->side * 6 + PAWN][0];
     nnue_push_null(b);
     make_null_move(b);
+    tt_prefetch(b->hash);
     t->keys[t->key_root + ss->ply + 1] = b->hash;
     (ss + 1)->plies_from_null = 0;
     add_node(t);
@@ -724,7 +755,7 @@ static int qsearch(ThreadData *t, Stack *ss, int alpha, int beta, bool pv_node) 
     Move best_move = NO_MOVE;
     int futility = stand_pat + QS_FUTILITY;
     Picker p;
-    picker_init(&p, tt_move, NO_MOVE, QS_SEE_BOUND);
+    picker_init(&p, tt_move, NO_MOVE, NO_MOVE, NO_MOVE, QS_SEE_BOUND);
     p.skip_quiets = !in_check;
     Move m;
     while ((m = picker_next(&p, t, ss)) != NO_MOVE) {
@@ -894,6 +925,7 @@ static int negamax(ThreadData *t, Stack *ss, int alpha, int beta, int depth, boo
     }
     ss->dext = root ? 0 : (ss - 1)->dext;
     (ss + 1)->killer = NO_MOVE;
+    (ss + 1)->killer2 = NO_MOVE;
     (ss + 2)->cutoffs = 0;
     bool tt_capture = tt_move != NO_MOVE && move_is_noisy(b, tt_move);
 
@@ -958,7 +990,7 @@ static int negamax(ThreadData *t, Stack *ss, int alpha, int beta, int depth, boo
         int depth_base = depth - 3 - (static_eval - beta) / PROBCUT_EVAL_DIV;
         int see_pivot = (pc_beta - static_eval) * PROBCUT_SEE_SCALE / 256;
         Picker p;
-        picker_init(&p, tt_capture ? tt_move : NO_MOVE, NO_MOVE, see_pivot);
+        picker_init(&p, tt_capture ? tt_move : NO_MOVE, NO_MOVE, NO_MOVE, NO_MOVE, see_pivot);
         p.skip_quiets = true;
         Move m;
         while ((m = picker_next(&p, t, ss)) != NO_MOVE) {
@@ -1023,10 +1055,18 @@ static int negamax(ThreadData *t, Stack *ss, int alpha, int beta, int depth, boo
     int n_quiets = 0, n_tacticals = 0;
     int lmp_threshold = lmp_table[improving][depth < 11 ? depth : 11];
     Move killer = (ss->killer != NO_MOVE && !move_is_noisy(b, ss->killer)) ? ss->killer : NO_MOVE;
+    Move killer2 = (ss->killer2 != NO_MOVE && ss->killer2 != killer &&
+                    !move_is_noisy(b, ss->killer2)) ? ss->killer2 : NO_MOVE;
+    Move counter = NO_MOVE;
+    if (ply > 0 && (ss - 1)->piece >= 0 && (ss - 1)->move != NO_MOVE) {
+        Move c = t->counter[(ss - 1)->piece][(ss - 1)->to];
+        if (c != NO_MOVE && c != killer && c != tt_move && !move_is_noisy(b, c))
+            counter = c;
+    }
     int see_table[2] = {SEE_NOISY_MARGIN * depth * depth, SEE_QUIET_MARGIN * depth};
 
     Picker p;
-    picker_init(&p, tt_move, killer, MAIN_SEE_BOUND);
+    picker_init(&p, tt_move, killer, counter, killer2, MAIN_SEE_BOUND);
     Move m;
     while ((m = picker_next(&p, t, ss)) != NO_MOVE) {
         if (m == excluded) continue;
@@ -1043,6 +1083,8 @@ static int negamax(ThreadData *t, Stack *ss, int alpha, int beta, int depth, boo
         lmr += cut_node * LMR_CUT;
         lmr -= stat * 1024 / HIST_LMR_DIV;
         lmr -= (m == killer) * LMR_KILLER;
+        lmr -= (m == counter) * LMR_COUNTER;
+        lmr -= (m == killer2) * LMR_KILLER2;
         lmr += !improving * LMR_NON_IMPROVING;
         lmr += tt_capture * LMR_TT_CAPTURE;
         lmr -= abs(corr) * LMR_CORR / 16384;
@@ -1052,14 +1094,22 @@ static int negamax(ThreadData *t, Stack *ss, int alpha, int beta, int depth, boo
         if (lmr_depth < 0) lmr_depth = 0;
 
         if (!root && !pv_node && !in_check && best_score > -TB_WIN_BOUND) {
-            if (lmr_depth < 9 && moves_made >= lmp_threshold) p.skip_quiets = true;
-            if (quiet && m != killer && lmr_depth < 7 && stat < HIST_PRUNE_MARGIN * (depth - 1)) {
+            if (quiet && m != killer && m != counter && m != killer2 &&
+                lmr_depth < 9 && moves_made >= lmp_threshold) {
                 p.skip_quiets = true;
                 continue;
             }
-            if (quiet && lmr_depth < 6 && static_eval + lmr_depth * FUT_MUL + FUT_BASE + stat / 128 <= alpha &&
-                !move_gives_check(b, m))
+            if (quiet && m != killer && m != counter && m != killer2 &&
+                lmr_depth < 7 && stat < HIST_PRUNE_MARGIN * (depth - 1)) {
                 p.skip_quiets = true;
+                continue;
+            }
+            if (quiet && m != killer && m != counter && m != killer2 &&
+                lmr_depth < 6 && static_eval + lmr_depth * FUT_MUL + FUT_BASE + stat / 128 <= alpha &&
+                !move_gives_check(b, m)) {
+                p.skip_quiets = true;
+                continue;
+            }
         }
         if (!root && best_score > -TB_WIN_BOUND && p.stage > ST_GOOD_NOISY &&
             !see_ge(b, m, see_table[quiet] - stat * SEE_HIST_MUL / 1024))
@@ -1071,6 +1121,10 @@ static int negamax(ThreadData *t, Stack *ss, int alpha, int beta, int depth, boo
         uint64_t nodes_before = atomic_load_explicit(&t->nodes, memory_order_relaxed);
         moves_made++;
         int ext = m == tt_move ? sext : 0;
+        if (ext == 0 && ply > 0 && !in_check && depth >= RECAP_EXT_DEPTH &&
+            ply < t->root_depth * 2 && (ss - 1)->move != NO_MOVE &&
+            move_to(m) == (ss - 1)->to && !quiet && see_ge(b, m, 0))
+            ext = 1;
         if (ext >= 2) ss->dext++;
 
         do_move(t, ss, m, !quiet);
@@ -1141,7 +1195,12 @@ static int negamax(ThreadData *t, Stack *ss, int alpha, int beta, int depth, boo
 
     if (best_move != NO_MOVE) {
         if (!move_is_noisy(b, best_move)) {
-            ss->killer = best_move;
+            if (ss->killer != best_move && ss->killer2 != best_move) {
+                ss->killer2 = ss->killer;
+                ss->killer = best_move;
+            }
+            if (ply > 0 && (ss - 1)->piece >= 0 && (ss - 1)->move != NO_MOVE)
+                t->counter[(ss - 1)->piece][(ss - 1)->to] = best_move;
             int bonus_depth = depth + (!in_check && static_eval <= best_score) + (!root && (ss - 1)->move == NO_MOVE);
             for (int i = 0; i < n_quiets; i++)
                 update_quiet_single(t, ss, quiets[i], bonus_depth, quiets[i] == best_move);
@@ -1250,6 +1309,8 @@ static void iterative_deepening(ThreadData *t) {
 
         t->completed = depth;
         t->score = score;
+        tm_vol = 1.0;
+        tm_prev_score = score;
         average = average == SCORE_NONE ? score : (2 * score + average) / 3;
 
         if (t->id != 0) continue;
@@ -1483,6 +1544,7 @@ static void clear_thread(ThreadData *t) {
     memset(t->tactical, 0, sizeof t->tactical);
     memset(t->cont, 0, sizeof t->cont);
     memset(t->pawn_hist, 0, sizeof t->pawn_hist);
+    memset(t->counter, 0, sizeof t->counter);
     memset(t->corr_pawn, 0, sizeof t->corr_pawn);
     memset(t->corr_nonpawn, 0, sizeof t->corr_nonpawn);
     memset(t->corr_minor, 0, sizeof t->corr_minor);
