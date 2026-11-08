@@ -1315,7 +1315,9 @@ static ThreadData *select_best_thread(void) {
         if (!t->completed || !t->best_pv_len) continue;
         if (!best->best_pv_len) { best = t; continue; }
         if (is_decisive(best->score)) {
-            if (abs(t->score) > abs(best->score)) best = t;
+            /* Decisive scores are ply-adjusted, so a straight comparison
+             * prefers faster mates and avoids swapping a win for a loss. */
+            if (t->score > best->score) best = t;
             continue;
         }
         if (t->score >= TB_WIN_BOUND) { best = t; continue; }
