@@ -78,6 +78,7 @@ static const HistConf H_TACT  = {104, 328, 1248, 29, 394, 1122};
 #define CORR_SIZE       16384
 #define CORR_MAX        1024
 #define PAWN_HIST_SIZE  1024
+#define LOW_PLY_HIST    4
 #define KEY_HISTORY     1024
 #define WINNING_BONUS   10000000
 #define MIN_WINNING     (WINNING_BONUS - MAX_HISTORY * 4)
@@ -124,6 +125,7 @@ typedef struct {
     int16_t  tactical[2][6][12][64];     /* [to threatened][captured][piece][to] */
     PieceTo  cont[12][64];
     PieceTo  pawn_hist[PAWN_HIST_SIZE];
+    int16_t  low_ply[LOW_PLY_HIST][64 * 64];   /* quiet history by ply, near the root */
     int16_t  corr_pawn[CORR_SIZE][2];
     int16_t  corr_nonpawn[2][CORR_SIZE][2];
     int16_t  corr_minor[CORR_SIZE][2];
@@ -519,6 +521,7 @@ static void score_quiets(const ThreadData *t, const Stack *ss, MoveList *ml, int
         if (c1) s += (*c1)[piece][to];
         if (c2) s += (*c2)[piece][to];
         s += (*ph)[piece][to];
+        if (ss->ply < LOW_PLY_HIST) s += t->low_ply[ss->ply][from | (to << 6)];
         if (move_gives_check(b, m) && see_ge(b, m, -QUIET_CHECK_SEE)) s += 10000;
         switch (pt) {
             case PAWN:
@@ -1142,6 +1145,10 @@ static int negamax(ThreadData *t, Stack *ss, int alpha, int beta, int depth, boo
     if (best_move != NO_MOVE) {
         if (!move_is_noisy(b, best_move)) {
             ss->killer = best_move;
+            if (ply < LOW_PLY_HIST) {
+                int16_t *lp = &t->low_ply[ply][move_from(best_move) | (move_to(best_move) << 6)];
+                gravity(lp, *lp, hist_bonus(&H_MAIN, depth), MAX_HISTORY);
+            }
             int bonus_depth = depth + (!in_check && static_eval <= best_score) + (!root && (ss - 1)->move == NO_MOVE);
             for (int i = 0; i < n_quiets; i++)
                 update_quiet_single(t, ss, quiets[i], bonus_depth, quiets[i] == best_move);
@@ -1483,6 +1490,7 @@ static void clear_thread(ThreadData *t) {
     memset(t->tactical, 0, sizeof t->tactical);
     memset(t->cont, 0, sizeof t->cont);
     memset(t->pawn_hist, 0, sizeof t->pawn_hist);
+    memset(t->low_ply, 0, sizeof t->low_ply);
     memset(t->corr_pawn, 0, sizeof t->corr_pawn);
     memset(t->corr_nonpawn, 0, sizeof t->corr_nonpawn);
     memset(t->corr_minor, 0, sizeof t->corr_minor);
