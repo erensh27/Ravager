@@ -119,6 +119,9 @@ typedef struct {
     int      optimism[2];
     bool     nmp_banned[2];
     uint64_t root_nodes[64][64];
+    Move     root_list[MAX_MOVES];   /* legal root moves, kept sorted by previous score */
+    int      root_scores[MAX_MOVES];
+    int      root_count;
     int16_t  from_to[2][2][2][64][64];   /* [side][from threatened][to threatened] */
     int16_t  piece_to[2][2][12][64];
     int16_t  tactical[2][6][12][64];     /* [to threatened][captured][piece][to] */
@@ -1027,10 +1030,18 @@ static int negamax(ThreadData *t, Stack *ss, int alpha, int beta, int depth, boo
 
     Picker p;
     picker_init(&p, tt_move, killer, MAIN_SEE_BOUND);
-    Move m;
-    while ((m = picker_next(&p, t, ss)) != NO_MOVE) {
-        if (m == excluded) continue;
-        if (!move_is_legal(b, m)) continue;
+    int root_idx = 0;
+    Move m = NO_MOVE;
+    for (;;) {
+        if (root) {
+            if (root_idx >= t->root_count) break;
+            m = t->root_list[root_idx];
+        } else {
+            m = picker_next(&p, t, ss);
+            if (m == NO_MOVE) break;
+        }
+        if (m == excluded) { if (root) root_idx++; continue; }
+        if (!root && !move_is_legal(b, m)) continue;
         bool quiet = !move_is_noisy(b, m);
         int from = move_from(m), piece = b->piece_on[from];
         int stat = quiet ? quiet_stat(t, ss, m, piece) / 32 : tactical_stat(t, ss, m, piece) / 32;
@@ -1112,8 +1123,13 @@ static int negamax(ThreadData *t, Stack *ss, int alpha, int beta, int depth, boo
         undo_move(t, m);
         if (ext >= 2) ss->dext--;
 
-        if (root && t->id == 0 && excluded == NO_MOVE)
-            t->root_nodes[from][move_to(m)] += atomic_load_explicit(&t->nodes, memory_order_relaxed) - nodes_before;
+        if (root) {
+            /* Moves that failed low sink to the back next iteration. */
+            t->root_scores[root_idx] = (moves_made == 1 || score > alpha) ? score : -INFINITY_SCORE;
+            root_idx++;
+            if (t->id == 0)
+                t->root_nodes[from][move_to(m)] += atomic_load_explicit(&t->nodes, memory_order_relaxed) - nodes_before;
+        }
         if (stopped()) return 0;
 
         if (score > best_score) {
@@ -1205,6 +1221,18 @@ static void iterative_deepening(ThreadData *t) {
     for (int depth = 1; depth <= max_depth; depth++) {
         t->root_depth = depth;
         t->seldepth = 0;
+        /* Search the moves that scored best last iteration first. */
+        for (int i = 1; i < t->root_count; i++) {
+            Move mv = t->root_list[i];
+            int sc = t->root_scores[i], j = i - 1;
+            while (j >= 0 && t->root_scores[j] < sc) {
+                t->root_list[j + 1] = t->root_list[j];
+                t->root_scores[j + 1] = t->root_scores[j];
+                j--;
+            }
+            t->root_list[j + 1] = mv;
+            t->root_scores[j + 1] = sc;
+        }
         t->optimism[0] = t->optimism[1] = 0;
         int alpha = -INFINITY_SCORE, beta = INFINITY_SCORE, delta = ASP_DELTA, fail_high = 0;
         if (depth > 1 && average != SCORE_NONE) {
@@ -1350,6 +1378,16 @@ static void reset_thread(ThreadData *t, const Board *root, const uint64_t *histo
     if (n > 0) memcpy(t->keys, history + (history_len - n), (size_t)n * sizeof(uint64_t));
     t->key_root = n;
     t->keys[n] = root->hash;
+
+    MoveList ml;
+    generate_moves(&t->board, &ml);
+    t->root_count = 0;
+    for (int i = 0; i < ml.count; i++) {
+        if (!move_is_legal(&t->board, ml.moves[i])) continue;
+        t->root_list[t->root_count] = ml.moves[i];
+        t->root_scores[t->root_count] = -INFINITY_SCORE;
+        t->root_count++;
+    }
 }
 
 static int legal_moves(Board *b, Move *out) {
