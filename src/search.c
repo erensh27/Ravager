@@ -678,6 +678,10 @@ static int qsearch(ThreadData *t, Stack *ss, int alpha, int beta, bool pv_node) 
     if (is_draw(t, ply)) return draw_score(t);
     bool in_check = b->checkers != 0;
     if (ply >= MAX_PLY - 1) return in_check ? 0 : adjust_eval(t, raw_eval(t), correction(t, ss));
+    /* Mate distance pruning, as in the main search. */
+    alpha = alpha > mated_in(ply) ? alpha : mated_in(ply);
+    beta = beta < mate_in(ply + 1) ? beta : mate_in(ply + 1);
+    if (alpha >= beta) return alpha;
     if (alpha < 0 && upcoming_repetition(t, ss)) {
         alpha = 0;
         if (alpha >= beta) return alpha;
