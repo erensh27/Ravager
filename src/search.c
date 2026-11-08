@@ -53,7 +53,7 @@ enum {
     PROBCUT_SEE_SCALE = 266, PROBCUT_ADA_OFFSET = 50, PROBCUT_ADA_DIV = 300,
     HIST_LMR_DIV = 17017, QS_SEE_BOUND = -141, MAIN_SEE_BOUND = -93,
     DEEPER_BASE = 32, DEEPER_MUL = 8, SHALLOWER_MARGIN = 16,
-    HIST_PRUNE_MARGIN = -3186, QS_FUTILITY = 350,
+    HIST_PRUNE_MARGIN = -3186, QS_FUTILITY = 350, NOISY_PRUNE_MARGIN = -3186, NOISY_PRUNE_DEPTH = 5,
     LMR_KILLER = 775, LMR_NON_PV = 987, LMR_TTPV = 1289, LMR_TTPV_FAIL_LOW = 1136,
     LMR_CUT = 1601, LMR_NON_IMPROVING = 613, LMR_TT_CAPTURE = 999, LMR_CHECK = 1361,
     LMR_CORR = 448, LMR_ALPHA_RAISE = 384, LMR_OFFSET = 226, LMR_TTPV_DEPTH = 2057,
@@ -1057,6 +1057,8 @@ static int negamax(ThreadData *t, Stack *ss, int alpha, int beta, int depth, boo
                 p.skip_quiets = true;
                 continue;
             }
+            if (!quiet && lmr_depth < NOISY_PRUNE_DEPTH && stat < NOISY_PRUNE_MARGIN * depth)
+                continue;
             if (quiet && lmr_depth < 6 && static_eval + lmr_depth * FUT_MUL + FUT_BASE + stat / 128 <= alpha &&
                 !move_gives_check(b, m))
                 p.skip_quiets = true;
