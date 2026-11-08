@@ -54,6 +54,7 @@ enum {
     HIST_LMR_DIV = 17017, QS_SEE_BOUND = -141, MAIN_SEE_BOUND = -93,
     DEEPER_BASE = 32, DEEPER_MUL = 8, SHALLOWER_MARGIN = 16,
     HIST_PRUNE_MARGIN = -3186, QS_FUTILITY = 350,
+    BNFP_BASE = 124, BNFP_MUL = 132, BNFP_DEPTH = 7,
     LMR_KILLER = 775, LMR_NON_PV = 987, LMR_TTPV = 1289, LMR_TTPV_FAIL_LOW = 1136,
     LMR_CUT = 1601, LMR_NON_IMPROVING = 613, LMR_TT_CAPTURE = 999, LMR_CHECK = 1361,
     LMR_CORR = 448, LMR_ALPHA_RAISE = 384, LMR_OFFSET = 226, LMR_TTPV_DEPTH = 2057,
@@ -1060,6 +1061,11 @@ static int negamax(ThreadData *t, Stack *ss, int alpha, int beta, int depth, boo
             if (quiet && lmr_depth < 6 && static_eval + lmr_depth * FUT_MUL + FUT_BASE + stat / 128 <= alpha &&
                 !move_gives_check(b, m))
                 p.skip_quiets = true;
+            /* Bad-noisy futility: a capture that cannot lift eval to alpha even
+             * after its material gain is not worth searching at low depth. */
+            if (!quiet && !move_is_promo(m) && lmr_depth < BNFP_DEPTH && !move_gives_check(b, m) &&
+                static_eval + BNFP_BASE + BNFP_MUL * lmr_depth + estimated_gain(b, m) + stat / 4 <= alpha)
+                continue;
         }
         if (!root && best_score > -TB_WIN_BOUND && p.stage > ST_GOOD_NOISY &&
             !see_ge(b, m, see_table[quiet] - stat * SEE_HIST_MUL / 1024))
