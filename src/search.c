@@ -54,6 +54,7 @@ enum {
     HIST_LMR_DIV = 17017, QS_SEE_BOUND = -141, MAIN_SEE_BOUND = -93,
     DEEPER_BASE = 32, DEEPER_MUL = 8, SHALLOWER_MARGIN = 16,
     HIST_PRUNE_MARGIN = -3186, QS_FUTILITY = 350,
+    TT_DEEP_MARGIN = 240,
     LMR_KILLER = 775, LMR_NON_PV = 987, LMR_TTPV = 1289, LMR_TTPV_FAIL_LOW = 1136,
     LMR_CUT = 1601, LMR_NON_IMPROVING = 613, LMR_TT_CAPTURE = 999, LMR_CHECK = 1361,
     LMR_CORR = 448, LMR_ALPHA_RAISE = 384, LMR_OFFSET = 226, LMR_TTPV_DEPTH = 2057,
@@ -988,6 +989,13 @@ static int negamax(ThreadData *t, Stack *ss, int alpha, int beta, int depth, boo
             }
         }
     }
+
+    /* A sufficiently deep lower-bound entry far above beta means a previous
+     * search already proved this node fails high by a wide margin. */
+    if (!pv_node && excluded == NO_MOVE && tt_hit && hit.bound == BOUND_LOWER &&
+        hit.depth >= depth - 4 && hit.score != SCORE_NONE && !is_decisive(hit.score) &&
+        !is_decisive(beta) && hit.score >= beta + TT_DEEP_MARGIN)
+        return beta + TT_DEEP_MARGIN;
 
     /* Singular extension. */
     int sext = 0;
