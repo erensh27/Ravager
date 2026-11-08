@@ -53,7 +53,7 @@ enum {
     PROBCUT_SEE_SCALE = 266, PROBCUT_ADA_OFFSET = 50, PROBCUT_ADA_DIV = 300,
     HIST_LMR_DIV = 17017, QS_SEE_BOUND = -141, MAIN_SEE_BOUND = -93,
     DEEPER_BASE = 32, DEEPER_MUL = 8, SHALLOWER_MARGIN = 16,
-    HIST_PRUNE_MARGIN = -3186, QS_FUTILITY = 350,
+    HIST_PRUNE_MARGIN = -3186, QS_FUTILITY = 350, LMR_CX_MUL = 4, LMR_CX_CAP = 300,
     LMR_KILLER = 775, LMR_NON_PV = 987, LMR_TTPV = 1289, LMR_TTPV_FAIL_LOW = 1136,
     LMR_CUT = 1601, LMR_NON_IMPROVING = 613, LMR_TT_CAPTURE = 999, LMR_CHECK = 1361,
     LMR_CORR = 448, LMR_ALPHA_RAISE = 384, LMR_OFFSET = 226, LMR_TTPV_DEPTH = 2057,
@@ -1048,6 +1048,11 @@ static int negamax(ThreadData *t, Stack *ss, int alpha, int beta, int depth, boo
         lmr -= abs(corr) * LMR_CORR / 16384;
         lmr += alpha_raises * LMR_ALPHA_RAISE;
         lmr += ((ss + 1)->cutoffs > 2) * LMR_CUTOFFS;
+        if (!in_check && raw != SCORE_NONE) {
+            int cx = abs(static_eval - raw);
+            if (cx > LMR_CX_CAP) cx = LMR_CX_CAP;
+            lmr -= cx * LMR_CX_MUL;
+        }
         int lmr_depth = depth - (lmr + LMR_TTPV_DEPTH * ss->ttpv + LMR_DEPTH_OFFSET) / 1024;
         if (lmr_depth < 0) lmr_depth = 0;
 
