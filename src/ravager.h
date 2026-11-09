@@ -47,6 +47,9 @@
 #define E5 36
 #define A8 56
 #define C8 58
+#ifdef D8
+#undef D8
+#endif
 #define D8 59
 #define E8 60
 #define F8 61

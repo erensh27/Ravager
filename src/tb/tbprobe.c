@@ -64,7 +64,15 @@ typedef size_t map_t;
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
+#ifdef D8
+#undef D8
+#define RE_DEFINE_D8
+#endif
 #include <windows.h>
+#ifdef RE_DEFINE_D8
+#define D8 59
+#undef RE_DEFINE_D8
+#endif
 #define SEP_CHAR ';'
 #define FD HANDLE
 #define FD_ERR INVALID_HANDLE_VALUE

@@ -212,7 +212,13 @@ static void tm_rescale(double node_fraction) {
     static const double stability_scale[5] = {2.50, 1.20, 0.90, 0.80, 0.75};
     double mult = stability_scale[tm_stability < 4 ? tm_stability : 4];
     mult *= 1.0 + 0.34 * tm_failed_low;
-    if (node_fraction >= 0) mult *= (1.62 - node_fraction) * 1.40;
+    if (node_fraction >= 0) {
+        if (node_fraction >= 0.75) {
+            mult *= 0.45 + (1.0 - node_fraction) * 1.50;
+        } else {
+            mult *= (1.62 - node_fraction) * 1.40;
+        }
+    }
     mult *= tm_forced;
     opt_time = base_opt * mult;
     hard_time = base_hard * mult;
@@ -506,7 +512,7 @@ static void score_noisy(const ThreadData *t, const Stack *ss, MoveList *ml, int 
 static void score_quiets(const ThreadData *t, const Stack *ss, MoveList *ml, int start) {
     const Board *b = &t->board;
     int us = b->side, them = us ^ 1;
-    const PieceTo *c1 = (ss - 1)->cont, *c2 = (ss - 2)->cont;
+    const PieceTo *c1 = (ss - 1)->cont, *c2 = (ss - 2)->cont, *c4 = (ss - 4)->cont;
     const PieceTo *ph = &t->pawn_hist[pawn_index(b)];
     Bitboard their_king = b->pieces[them][KING], their_queens = b->pieces[them][QUEEN];
     Bitboard their_rooks = b->pieces[them][ROOK];
@@ -518,6 +524,7 @@ static void score_quiets(const ThreadData *t, const Stack *ss, MoveList *ml, int
         int s = main_history(t, ss, us, from, to, piece);
         if (c1) s += (*c1)[piece][to];
         if (c2) s += (*c2)[piece][to];
+        if (c4) s += (*c4)[piece][to];
         s += (*ph)[piece][to];
         if (move_gives_check(b, m) && see_ge(b, m, -QUIET_CHECK_SEE)) s += 10000;
         switch (pt) {
@@ -1048,17 +1055,20 @@ static int negamax(ThreadData *t, Stack *ss, int alpha, int beta, int depth, boo
         lmr -= abs(corr) * LMR_CORR / 16384;
         lmr += alpha_raises * LMR_ALPHA_RAISE;
         lmr += ((ss + 1)->cutoffs > 2) * LMR_CUTOFFS;
+        if (!quiet) lmr += see_ge(b, m, 0) ? -1024 : 512;
+        bool gives_check = move_gives_check(b, m);
+        if (gives_check) lmr -= LMR_CHECK;
         int lmr_depth = depth - (lmr + LMR_TTPV_DEPTH * ss->ttpv + LMR_DEPTH_OFFSET) / 1024;
         if (lmr_depth < 0) lmr_depth = 0;
 
         if (!root && !pv_node && !in_check && best_score > -TB_WIN_BOUND) {
-            if (lmr_depth < 9 && moves_made >= lmp_threshold) p.skip_quiets = true;
-            if (quiet && m != killer && lmr_depth < 7 && stat < HIST_PRUNE_MARGIN * (depth - 1)) {
+            if (lmr_depth < 9 && moves_made >= lmp_threshold && !gives_check) p.skip_quiets = true;
+            if (quiet && m != killer && !gives_check && lmr_depth < 7 && stat < HIST_PRUNE_MARGIN * (depth - 1)) {
                 p.skip_quiets = true;
                 continue;
             }
             if (quiet && lmr_depth < 6 && static_eval + lmr_depth * FUT_MUL + FUT_BASE + stat / 128 <= alpha &&
-                !move_gives_check(b, m))
+                !gives_check)
                 p.skip_quiets = true;
         }
         if (!root && best_score > -TB_WIN_BOUND && p.stage > ST_GOOD_NOISY &&
@@ -1082,7 +1092,7 @@ static int negamax(ThreadData *t, Stack *ss, int alpha, int beta, int depth, boo
         } else {
             int r;
             if (depth > 2 && moves_made > 1 + root) {
-                r = lmr - (b->checkers != 0) * LMR_CHECK;
+                r = lmr;
                 ss->reduction = r;
                 r /= 1024;
             } else {
@@ -1244,7 +1254,7 @@ static void iterative_deepening(ThreadData *t) {
                 }
                 break;
             }
-            delta += delta * (ASP_GROWTH + 19 * fail_high) / 128;
+            delta += delta * (ASP_GROWTH + 19 * fail_high + 24 * tm_failed_low) / 128;
         }
         if (stopped()) break;
 
