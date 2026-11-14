@@ -22,13 +22,13 @@ typedef struct {
     uint8_t  genbound;   /* generation << 3 | pv << 2 | bound */
 } TTEntry;
 
-#define BUCKET_SIZE 3
+#define BUCKET_SIZE 6
 typedef struct {
     TTEntry entry[BUCKET_SIZE];
-    uint16_t pad;
+    uint8_t pad[4];
 } TTBucket;
 _Static_assert(sizeof(TTEntry) == 10, "TT entry layout");
-_Static_assert(sizeof(TTBucket) == 32, "TT bucket layout");
+_Static_assert(sizeof(TTBucket) == 64, "TT bucket layout");
 
 #define GEN_STEP  8
 #define GEN_CYCLE 256
