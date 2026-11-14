@@ -59,7 +59,7 @@ enum {
     LMR_CORR = 448, LMR_ALPHA_RAISE = 384, LMR_OFFSET = 226, LMR_TTPV_DEPTH = 2057,
     LMR_DEPTH_OFFSET = -400, LMR_CUTOFFS = 900,
     MAIN_STAT = 26, CONT1_STAT = 37, CONT2_STAT = 33, CONT4_STAT = 13, TACT_STAT = 43,
-    CORR_PAWN_W = 1890, CORR_MINOR_W = 1292, CORR_NONPAWN_W = 1887, CORR_CONT_W = 1942,
+    CORR_PAWN_W = 1890, CORR_MINOR_W = 1292, CORR_MAJOR_W = 1536, CORR_NONPAWN_W = 1887, CORR_CONT_W = 1942,
     POLICY_SCALE = 227, POLICY_OFFSET = -16, POLICY_MAX = 94,
     HINDSIGHT_EXT = 1419, HINDSIGHT_RED = 2494, HINDSIGHT_RED_EVAL = 128,
     OPTIMISM_OFFSET = 196, OPTIMISM_MAT_BASE = 1869, MATERIAL_SCALE_BASE = 856,
@@ -89,7 +89,7 @@ static const HistConf H_TACT  = {104, 328, 1248, 29, 394, 1122};
 typedef int16_t PieceTo[12][64];
 
 typedef struct {
-    Move     move, excluded, killer;
+    Move     move, excluded, killer, countermove;
     int      piece;            /* moved piece (colour*6+type), -1 for null */
     int      to;
     PieceTo *cont;             /* continuation entry of the move made here */
@@ -124,9 +124,11 @@ typedef struct {
     int16_t  tactical[2][6][12][64];     /* [to threatened][captured][piece][to] */
     PieceTo  cont[12][64];
     PieceTo  pawn_hist[PAWN_HIST_SIZE];
+    Move     countermove[12][64];         /* [piece][to] -> counter move */
     int16_t  corr_pawn[CORR_SIZE][2];
     int16_t  corr_nonpawn[2][CORR_SIZE][2];
     int16_t  corr_minor[CORR_SIZE][2];
+    int16_t  corr_major[CORR_SIZE][2];    /* major piece correction history */
     int16_t  corr_cont[CORR_SIZE][2];
 } ThreadData;
 
@@ -396,6 +398,7 @@ static int correction(const ThreadData *t, const Stack *ss) {
     int64_t adj = 0;
     adj += (int64_t)CORR_PAWN_W * corr_sign(b->pawn_key) * t->corr_pawn[b->pawn_key % CORR_SIZE][us];
     adj += (int64_t)CORR_MINOR_W * corr_sign(b->minor_key) * t->corr_minor[b->minor_key % CORR_SIZE][us];
+    adj += (int64_t)CORR_MAJOR_W * corr_sign(b->major_key) * t->corr_major[b->major_key % CORR_SIZE][us];
     for (int c = 0; c < 2; c++)
         adj += (int64_t)CORR_NONPAWN_W * corr_sign(b->nonpawn_key[c]) *
                t->corr_nonpawn[c][b->nonpawn_key[c] % CORR_SIZE][us];
@@ -419,6 +422,7 @@ static void update_correction(ThreadData *t, const Stack *ss, int depth, int com
 #define CORR_UPDATE(slot, key) do { e = (slot); int sb = bonus * corr_sign(key); gravity(e, *e, sb, CORR_MAX); } while (0)
     CORR_UPDATE(corr_slot(t->corr_pawn, b->pawn_key, us), b->pawn_key);
     CORR_UPDATE(corr_slot(t->corr_minor, b->minor_key, us), b->minor_key);
+    CORR_UPDATE(corr_slot(t->corr_major, b->major_key, us), b->major_key);
     for (int c = 0; c < 2; c++)
         CORR_UPDATE(corr_slot(t->corr_nonpawn[c], b->nonpawn_key[c], us), b->nonpawn_key[c]);
     if (ss->ply > 2) { uint64_t k = cont_corr_key(ss, 2); CORR_UPDATE(corr_slot(t->corr_cont, k, us), k); }
@@ -470,23 +474,24 @@ static bool upcoming_repetition(ThreadData *t, const Stack *ss) {
 /* ------------------------------------------------------------------ */
 /* Move picker. */
 
-typedef enum { ST_TT, ST_GEN_NOISY, ST_GOOD_NOISY, ST_KILLER, ST_GEN_QUIET, ST_REMAINING, ST_DONE } Stage;
+typedef enum { ST_TT, ST_GEN_NOISY, ST_GOOD_NOISY, ST_KILLER, ST_COUNTERMOVE, ST_GEN_QUIET, ST_REMAINING, ST_DONE } Stage;
 
 typedef struct {
     MoveList list;
     int   idx;
     Stage stage;
-    Move  tt_move, killer;
+    Move  tt_move, killer, countermove;
     bool  skip_quiets;
     int   see_threshold;
 } Picker;
 
-static void picker_init(Picker *p, Move tt_move, Move killer, int see_threshold) {
+static void picker_init(Picker *p, Move tt_move, Move killer, Move countermove, int see_threshold) {
     p->list.count = 0;
     p->idx = 0;
     p->stage = ST_TT;
     p->tt_move = tt_move;
     p->killer = killer;
+    p->countermove = countermove;
     p->skip_quiets = false;
     p->see_threshold = see_threshold;
 }
@@ -506,7 +511,7 @@ static void score_noisy(const ThreadData *t, const Stack *ss, MoveList *ml, int 
 static void score_quiets(const ThreadData *t, const Stack *ss, MoveList *ml, int start) {
     const Board *b = &t->board;
     int us = b->side, them = us ^ 1;
-    const PieceTo *c1 = (ss - 1)->cont, *c2 = (ss - 2)->cont;
+    const PieceTo *c1 = (ss - 1)->cont, *c2 = (ss - 2)->cont, *c4 = (ss - 4)->cont;
     const PieceTo *ph = &t->pawn_hist[pawn_index(b)];
     Bitboard their_king = b->pieces[them][KING], their_queens = b->pieces[them][QUEEN];
     Bitboard their_rooks = b->pieces[them][ROOK];
@@ -518,6 +523,7 @@ static void score_quiets(const ThreadData *t, const Stack *ss, MoveList *ml, int
         int s = main_history(t, ss, us, from, to, piece);
         if (c1) s += (*c1)[piece][to];
         if (c2) s += (*c2)[piece][to];
+        if (c4) s += (*c4)[piece][to];
         s += (*ph)[piece][to];
         if (move_gives_check(b, m) && see_ge(b, m, -QUIET_CHECK_SEE)) s += 10000;
         switch (pt) {
@@ -591,10 +597,17 @@ static Move picker_next(Picker *p, ThreadData *t, const Stack *ss) {
         break;
     }
     case ST_KILLER:
-        p->stage = ST_GEN_QUIET;
+        p->stage = ST_COUNTERMOVE;
         if (!p->skip_quiets && p->killer != NO_MOVE && p->killer != p->tt_move &&
             !move_is_noisy(b, p->killer) && move_is_pseudo_legal(b, p->killer))
             return p->killer;
+        break;
+    case ST_COUNTERMOVE:
+        p->stage = ST_GEN_QUIET;
+        if (!p->skip_quiets && p->countermove != NO_MOVE && p->countermove != p->tt_move &&
+            p->countermove != p->killer &&
+            !move_is_noisy(b, p->countermove) && move_is_pseudo_legal(b, p->countermove))
+            return p->countermove;
         break;
     case ST_GEN_QUIET:
         p->stage = ST_REMAINING;
@@ -612,7 +625,7 @@ static Move picker_next(Picker *p, ThreadData *t, const Stack *ss) {
         p->idx++;
         if (p->skip_quiets && p->list.scores[i] < MIN_WINNING) { p->stage = ST_DONE; return NO_MOVE; }
         Move m = p->list.moves[i];
-        if (m == p->tt_move || m == p->killer) continue;
+        if (m == p->tt_move || m == p->killer || m == p->countermove) continue;
         return m;
     }
     case ST_DONE:
@@ -637,6 +650,7 @@ static inline void do_move(ThreadData *t, Stack *ss, Move m, bool tactical) {
     t->keys[t->key_root + ss->ply + 1] = b->hash;
     (ss + 1)->plies_from_null = ss->plies_from_null + 1;
     add_node(t);
+    tt_prefetch(b->hash);
 }
 
 static inline void undo_move(ThreadData *t, Move m) { unmake_move(&t->board, m); }
@@ -653,6 +667,7 @@ static inline void do_null(ThreadData *t, Stack *ss) {
     t->keys[t->key_root + ss->ply + 1] = b->hash;
     (ss + 1)->plies_from_null = 0;
     add_node(t);
+    tt_prefetch(b->hash);
 }
 
 static inline void update_pv(ThreadData *t, int ply, Move m) {
@@ -690,7 +705,7 @@ static int qsearch(ThreadData *t, Stack *ss, int alpha, int beta, bool pv_node) 
         tt_move = validated(b, hit.move);
         if (hit.move != NO_MOVE && tt_move == NO_MOVE) tt_hit = false;
     }
-    if (tt_hit && !pv_node && hit.score != SCORE_NONE && b->half_move_clock < 90 &&
+    if (tt_hit && !pv_node && hit.bound != BOUND_NONE && hit.score != SCORE_NONE && b->half_move_clock < 90 &&
         (hit.bound == BOUND_EXACT || (hit.bound == BOUND_LOWER && hit.score >= beta) ||
          (hit.bound == BOUND_UPPER && hit.score <= alpha)))
         return hit.score;
@@ -705,7 +720,7 @@ static int qsearch(ThreadData *t, Stack *ss, int alpha, int beta, bool pv_node) 
         if (tt_hit) {
             raw = hit.eval != SCORE_NONE ? hit.eval : raw_eval(t);
             stand_pat = ss->static_eval = adjust_eval(t, raw, corr);
-            if (hit.score != SCORE_NONE && !is_decisive(hit.score) &&
+            if (hit.bound != BOUND_NONE && hit.score != SCORE_NONE && !is_decisive(hit.score) &&
                 (hit.bound == BOUND_EXACT || (hit.bound == BOUND_UPPER && hit.score < stand_pat) ||
                  (hit.bound == BOUND_LOWER && hit.score > stand_pat)))
                 stand_pat = hit.score;
@@ -724,7 +739,7 @@ static int qsearch(ThreadData *t, Stack *ss, int alpha, int beta, bool pv_node) 
     Move best_move = NO_MOVE;
     int futility = stand_pat + QS_FUTILITY;
     Picker p;
-    picker_init(&p, tt_move, NO_MOVE, QS_SEE_BOUND);
+    picker_init(&p, tt_move, NO_MOVE, NO_MOVE, QS_SEE_BOUND);
     p.skip_quiets = !in_check;
     Move m;
     while ((m = picker_next(&p, t, ss)) != NO_MOVE) {
@@ -738,7 +753,7 @@ static int qsearch(ThreadData *t, Stack *ss, int alpha, int beta, bool pv_node) 
         }
         do_move(t, ss, m, tactical);
         (ss + 1)->ply = ply + 1;
-        if (best_score > -TB_WIN_BOUND) p.skip_quiets = true;
+        if (!in_check && best_score > -TB_WIN_BOUND) p.skip_quiets = true;
         moves_made++;
         int score = -qsearch(t, ss + 1, -beta, -alpha, pv_node);
         undo_move(t, m);
@@ -819,7 +834,7 @@ static int negamax(ThreadData *t, Stack *ss, int alpha, int beta, int depth, boo
     }
     if (!tt_hit) { hit.score = SCORE_NONE; hit.eval = SCORE_NONE; hit.depth = -1; hit.bound = BOUND_NONE; hit.pv = false; }
 
-    if (tt_hit && !pv_node && hit.score != SCORE_NONE && b->half_move_clock < 90) {
+    if (tt_hit && !pv_node && hit.bound != BOUND_NONE && hit.score != SCORE_NONE && b->half_move_clock < 90) {
         bool proven = (hit.score >= TB_WIN_BOUND && hit.bound == BOUND_LOWER && hit.score >= beta) ||
                       (hit.score <= -TB_WIN_BOUND && hit.bound == BOUND_UPPER && hit.score <= alpha);
         if ((proven || hit.depth >= depth + (hit.score >= beta)) &&
@@ -861,7 +876,7 @@ static int negamax(ThreadData *t, Stack *ss, int alpha, int beta, int depth, boo
     } else if (tt_hit) {
         raw = hit.eval != SCORE_NONE ? hit.eval : raw_eval(t);
         static_eval = eval = adjust_eval(t, raw, corr);
-        if (hit.score != SCORE_NONE &&
+        if (hit.bound != BOUND_NONE && hit.score != SCORE_NONE &&
             (hit.bound == BOUND_EXACT || (hit.bound == BOUND_UPPER && hit.score < static_eval) ||
              (hit.bound == BOUND_LOWER && hit.score > static_eval)))
             eval = hit.score;
@@ -874,7 +889,7 @@ static int negamax(ThreadData *t, Stack *ss, int alpha, int beta, int depth, boo
     ss->eval = eval;
 
     int complexity = 0;
-    if (tt_hit && static_eval != SCORE_NONE && hit.score != SCORE_NONE && !is_decisive(hit.score) &&
+    if (tt_hit && hit.bound != BOUND_NONE && static_eval != SCORE_NONE && hit.score != SCORE_NONE && !is_decisive(hit.score) &&
         (hit.bound == BOUND_EXACT || (hit.bound == BOUND_UPPER && hit.score < static_eval) ||
          (hit.bound == BOUND_LOWER && hit.score > static_eval)))
         complexity = abs(static_eval - hit.score);
@@ -914,8 +929,9 @@ static int negamax(ThreadData *t, Stack *ss, int alpha, int beta, int depth, boo
 
         /* Reverse futility pruning. */
         int rfp = RFP_MARGIN * depth - (improving && !hanging_material(b, ss)) * RFP_IMPROVING + abs(corr) / 2;
+        int rfp_margin = (tt_move != NO_MOVE && !tt_capture) ? 30 : 0;
         if (!ss->ttpv && depth < 9 && beta > -TB_WIN_BOUND && eval < TB_WIN_BOUND && eval >= beta &&
-            (tt_move == NO_MOVE || tt_capture) && eval - rfp >= beta)
+            eval - rfp - rfp_margin >= beta)
             return beta + (eval - beta) / 3;
 
         /* Null-move pruning. */
@@ -947,7 +963,7 @@ static int negamax(ThreadData *t, Stack *ss, int alpha, int beta, int depth, boo
     /* Internal iterative reduction. */
     if (excluded == NO_MOVE) {
         if (cut_node && depth >= 8 && (tt_move == NO_MOVE || hit.depth + 4 <= depth)) depth--;
-        else if (pv_node && depth >= 4 && tt_move == NO_MOVE) depth--;
+        else if (depth >= 4 && tt_move == NO_MOVE) depth--;
     }
 
     /* ProbCut. */
@@ -958,7 +974,7 @@ static int negamax(ThreadData *t, Stack *ss, int alpha, int beta, int depth, boo
         int depth_base = depth - 3 - (static_eval - beta) / PROBCUT_EVAL_DIV;
         int see_pivot = (pc_beta - static_eval) * PROBCUT_SEE_SCALE / 256;
         Picker p;
-        picker_init(&p, tt_capture ? tt_move : NO_MOVE, NO_MOVE, see_pivot);
+        picker_init(&p, tt_capture ? tt_move : NO_MOVE, NO_MOVE, NO_MOVE, see_pivot);
         p.skip_quiets = true;
         Move m;
         while ((m = picker_next(&p, t, ss)) != NO_MOVE) {
@@ -1023,10 +1039,15 @@ static int negamax(ThreadData *t, Stack *ss, int alpha, int beta, int depth, boo
     int n_quiets = 0, n_tacticals = 0;
     int lmp_threshold = lmp_table[improving][depth < 11 ? depth : 11];
     Move killer = (ss->killer != NO_MOVE && !move_is_noisy(b, ss->killer)) ? ss->killer : NO_MOVE;
+    Move countermove = NO_MOVE;
+    if ((ss - 1)->piece >= 0 && (ss - 1)->piece < 12)
+        countermove = t->countermove[(ss - 1)->piece][(ss - 1)->to];
+    if (countermove != NO_MOVE && (move_is_noisy(b, countermove) || !move_is_pseudo_legal(b, countermove)))
+        countermove = NO_MOVE;
     int see_table[2] = {SEE_NOISY_MARGIN * depth * depth, SEE_QUIET_MARGIN * depth};
 
     Picker p;
-    picker_init(&p, tt_move, killer, MAIN_SEE_BOUND);
+    picker_init(&p, tt_move, killer, countermove, MAIN_SEE_BOUND);
     Move m;
     while ((m = picker_next(&p, t, ss)) != NO_MOVE) {
         if (m == excluded) continue;
@@ -1043,6 +1064,8 @@ static int negamax(ThreadData *t, Stack *ss, int alpha, int beta, int depth, boo
         lmr += cut_node * LMR_CUT;
         lmr -= stat * 1024 / HIST_LMR_DIV;
         lmr -= (m == killer) * LMR_KILLER;
+        lmr -= (m == countermove) * (LMR_KILLER * 3 / 4);
+        if (!quiet) lmr -= 1024;
         lmr += !improving * LMR_NON_IMPROVING;
         lmr += tt_capture * LMR_TT_CAPTURE;
         lmr -= abs(corr) * LMR_CORR / 16384;
@@ -1052,14 +1075,20 @@ static int negamax(ThreadData *t, Stack *ss, int alpha, int beta, int depth, boo
         if (lmr_depth < 0) lmr_depth = 0;
 
         if (!root && !pv_node && !in_check && best_score > -TB_WIN_BOUND) {
-            if (lmr_depth < 9 && moves_made >= lmp_threshold) p.skip_quiets = true;
-            if (quiet && m != killer && lmr_depth < 7 && stat < HIST_PRUNE_MARGIN * (depth - 1)) {
+            if (quiet && m != killer && m != countermove && lmr_depth < 9 && moves_made >= lmp_threshold) {
                 p.skip_quiets = true;
                 continue;
             }
-            if (quiet && lmr_depth < 6 && static_eval + lmr_depth * FUT_MUL + FUT_BASE + stat / 128 <= alpha &&
-                !move_gives_check(b, m))
+            if (quiet && m != killer && m != countermove && lmr_depth < 7 && stat < HIST_PRUNE_MARGIN * (depth - 1)) {
                 p.skip_quiets = true;
+                continue;
+            }
+            if (quiet && m != killer && m != countermove && lmr_depth < 6 &&
+                static_eval + lmr_depth * FUT_MUL + FUT_BASE + stat / 128 <= alpha &&
+                !move_gives_check(b, m)) {
+                p.skip_quiets = true;
+                continue;
+            }
         }
         if (!root && best_score > -TB_WIN_BOUND && p.stage > ST_GOOD_NOISY &&
             !see_ge(b, m, see_table[quiet] - stat * SEE_HIST_MUL / 1024))
@@ -1142,9 +1171,14 @@ static int negamax(ThreadData *t, Stack *ss, int alpha, int beta, int depth, boo
     if (best_move != NO_MOVE) {
         if (!move_is_noisy(b, best_move)) {
             ss->killer = best_move;
+            if ((ss - 1)->piece >= 0 && (ss - 1)->piece < 12)
+                t->countermove[(ss - 1)->piece][(ss - 1)->to] = best_move;
             int bonus_depth = depth + (!in_check && static_eval <= best_score) + (!root && (ss - 1)->move == NO_MOVE);
             for (int i = 0; i < n_quiets; i++)
                 update_quiet_single(t, ss, quiets[i], bonus_depth, quiets[i] == best_move);
+        } else {
+            for (int i = 0; i < n_quiets; i++)
+                update_quiet_single(t, ss, quiets[i], depth, false);
         }
         update_tactical(t, ss, tacticals, n_tacticals, best_move, depth);
     }
@@ -1207,12 +1241,15 @@ static void iterative_deepening(ThreadData *t) {
         t->seldepth = 0;
         t->optimism[0] = t->optimism[1] = 0;
         int alpha = -INFINITY_SCORE, beta = INFINITY_SCORE, delta = ASP_DELTA, fail_high = 0;
-        if (depth > 1 && average != SCORE_NONE) {
+        if (depth >= 4 && average != SCORE_NONE) {
             t->optimism[b->side] = 128 * average / (abs(average) + OPTIMISM_OFFSET);
             t->optimism[b->side ^ 1] = -t->optimism[b->side];
             delta += average * average / ASP_DIVISOR;
             alpha = clampi(average - delta, -INFINITY_SCORE, INFINITY_SCORE);
             beta = clampi(average + delta, -INFINITY_SCORE, INFINITY_SCORE);
+        } else if (average != SCORE_NONE) {
+            t->optimism[b->side] = 128 * average / (abs(average) + OPTIMISM_OFFSET);
+            t->optimism[b->side ^ 1] = -t->optimism[b->side];
         }
         int score;
         for (;;) {
@@ -1483,9 +1520,11 @@ static void clear_thread(ThreadData *t) {
     memset(t->tactical, 0, sizeof t->tactical);
     memset(t->cont, 0, sizeof t->cont);
     memset(t->pawn_hist, 0, sizeof t->pawn_hist);
+    memset(t->countermove, 0, sizeof t->countermove);
     memset(t->corr_pawn, 0, sizeof t->corr_pawn);
     memset(t->corr_nonpawn, 0, sizeof t->corr_nonpawn);
     memset(t->corr_minor, 0, sizeof t->corr_minor);
+    memset(t->corr_major, 0, sizeof t->corr_major);
     memset(t->corr_cont, 0, sizeof t->corr_cont);
 }
 
