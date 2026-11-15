@@ -51,6 +51,7 @@ static inline void toggle_keys(Board *b, int color, int piece, int sq) {
     else {
         b->nonpawn_key[color] ^= k;
         if (piece == KNIGHT || piece == BISHOP || piece == KING) b->minor_key ^= k;
+        if (piece == ROOK || piece == QUEEN || piece == KING) b->major_key ^= k;
     }
 }
 
