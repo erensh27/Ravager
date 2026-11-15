@@ -59,7 +59,7 @@ enum {
     LMR_CORR = 448, LMR_ALPHA_RAISE = 384, LMR_OFFSET = 226, LMR_TTPV_DEPTH = 2057,
     LMR_DEPTH_OFFSET = -400, LMR_CUTOFFS = 900,
     MAIN_STAT = 26, CONT1_STAT = 37, CONT2_STAT = 33, CONT4_STAT = 13, TACT_STAT = 43,
-    CORR_PAWN_W = 1890, CORR_MINOR_W = 1292, CORR_NONPAWN_W = 1887, CORR_CONT_W = 1942,
+    CORR_PAWN_W = 1890, CORR_MINOR_W = 1292, CORR_MAJOR_W = 1536, CORR_NONPAWN_W = 1887, CORR_CONT_W = 1942,
     POLICY_SCALE = 227, POLICY_OFFSET = -16, POLICY_MAX = 94,
     HINDSIGHT_EXT = 1419, HINDSIGHT_RED = 2494, HINDSIGHT_RED_EVAL = 128,
     OPTIMISM_OFFSET = 196, OPTIMISM_MAT_BASE = 1869, MATERIAL_SCALE_BASE = 856,
@@ -127,6 +127,7 @@ typedef struct {
     int16_t  corr_pawn[CORR_SIZE][2];
     int16_t  corr_nonpawn[2][CORR_SIZE][2];
     int16_t  corr_minor[CORR_SIZE][2];
+    int16_t  corr_major[CORR_SIZE][2];    /* major piece correction history */
     int16_t  corr_cont[CORR_SIZE][2];
 } ThreadData;
 
@@ -396,6 +397,7 @@ static int correction(const ThreadData *t, const Stack *ss) {
     int64_t adj = 0;
     adj += (int64_t)CORR_PAWN_W * corr_sign(b->pawn_key) * t->corr_pawn[b->pawn_key % CORR_SIZE][us];
     adj += (int64_t)CORR_MINOR_W * corr_sign(b->minor_key) * t->corr_minor[b->minor_key % CORR_SIZE][us];
+    adj += (int64_t)CORR_MAJOR_W * corr_sign(b->major_key) * t->corr_major[b->major_key % CORR_SIZE][us];
     for (int c = 0; c < 2; c++)
         adj += (int64_t)CORR_NONPAWN_W * corr_sign(b->nonpawn_key[c]) *
                t->corr_nonpawn[c][b->nonpawn_key[c] % CORR_SIZE][us];
@@ -419,6 +421,7 @@ static void update_correction(ThreadData *t, const Stack *ss, int depth, int com
 #define CORR_UPDATE(slot, key) do { e = (slot); int sb = bonus * corr_sign(key); gravity(e, *e, sb, CORR_MAX); } while (0)
     CORR_UPDATE(corr_slot(t->corr_pawn, b->pawn_key, us), b->pawn_key);
     CORR_UPDATE(corr_slot(t->corr_minor, b->minor_key, us), b->minor_key);
+    CORR_UPDATE(corr_slot(t->corr_major, b->major_key, us), b->major_key);
     for (int c = 0; c < 2; c++)
         CORR_UPDATE(corr_slot(t->corr_nonpawn[c], b->nonpawn_key[c], us), b->nonpawn_key[c]);
     if (ss->ply > 2) { uint64_t k = cont_corr_key(ss, 2); CORR_UPDATE(corr_slot(t->corr_cont, k, us), k); }
@@ -1486,6 +1489,7 @@ static void clear_thread(ThreadData *t) {
     memset(t->corr_pawn, 0, sizeof t->corr_pawn);
     memset(t->corr_nonpawn, 0, sizeof t->corr_nonpawn);
     memset(t->corr_minor, 0, sizeof t->corr_minor);
+    memset(t->corr_major, 0, sizeof t->corr_major);
     memset(t->corr_cont, 0, sizeof t->corr_cont);
 }
 
