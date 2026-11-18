@@ -6,3 +6,5 @@
 /ravager-linux-x64-avx2
 /ravager-windows-x64-avx2.exe
 gmon.out
+/tests/*-test
+/tests/*-test.exe
