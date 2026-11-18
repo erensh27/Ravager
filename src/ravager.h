@@ -82,6 +82,9 @@
 #define INFINITY_SCORE 32767
 #define MATE_SCORE     32000
 #define MATE_BOUND     31000
+#define TB_WIN_SCORE   30000
+#define TB_WIN_BOUND   (TB_WIN_SCORE - 2 * MAX_PLY)
+#define EVAL_LIMIT     (TB_WIN_BOUND - 1)
 #define NO_MOVE        ((uint16_t)0)
 
 /* TT bound types */
