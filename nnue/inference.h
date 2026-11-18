@@ -9,6 +9,7 @@ extern const char *net_tier;
 bool net_load(const unsigned char *bytes, size_t count);
 void net_prepare(const Board *b);
 void net_push(const Board *b);
+void net_push_null(const Board *b);
 int  net_eval(const Board *b, bool fresh);
 
 #endif
