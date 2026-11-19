@@ -34,9 +34,9 @@ void syzygy_init(const char *path) {
 bool syzygy_available(void) { return tb_ok; }
 
 /* Pack a Ravager board into Pyrrhic's argument list and probe.
- * ep encoding: 0 = none, otherwise square+1 (a1 can never be an ep square). */
+ * ep encoding: 0 = none, otherwise the square (a1 cannot be an ep square). */
 static unsigned raw_probe_wdl(const Board *b) {
-    unsigned ep = (b->ep_square == NO_SQUARE) ? 0u : (unsigned)b->ep_square + 1u;
+    unsigned ep = (b->ep_square == NO_SQUARE) ? 0u : (unsigned)b->ep_square;
     return tb_probe_wdl(
         b->occupancy[WHITE],            b->occupancy[BLACK],
         b->pieces[WHITE][KING]   | b->pieces[BLACK][KING],
@@ -71,7 +71,7 @@ Move syzygy_probe_root(const Board *b) {
     int pieces = popcount(b->occ_all);
     if (pieces > TB_LARGEST || pieces > syzygy_probe_limit) return NO_MOVE;
 
-    unsigned ep = (b->ep_square == NO_SQUARE) ? 0u : (unsigned)b->ep_square + 1u;
+    unsigned ep = (b->ep_square == NO_SQUARE) ? 0u : (unsigned)b->ep_square;
     unsigned res = tb_probe_root(
         b->occupancy[WHITE],            b->occupancy[BLACK],
         b->pieces[WHITE][KING]   | b->pieces[BLACK][KING],

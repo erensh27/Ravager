@@ -56,6 +56,8 @@ static const int16_t *pw, *bias;      /* piece-square rows, biases */
 static _Alignas(64) int8_t w1[8][32768];
 static _Alignas(64) float b1[8][32], w2[8][32][64], b2[8][64], w3[8][32], b3[8];
 static _Alignas(64) const int16_t zero_acc[WIDTH];
+static _Alignas(16) uint16_t group_indices[256][8];
+static uint64_t network_generation;
 const char *net_tier = "scalar";
 
 #include "neuron_order.h"
@@ -68,6 +70,8 @@ typedef struct {
     uint16_t pp[2][128];    /* pawn-pair feature ids per perspective */
     uint8_t npp[2];
     uint8_t squares[64], view[2], bucket[2];
+    int output[2];
+    uint8_t output_mask;
     bool ready;
 } Frame;
 
@@ -80,6 +84,8 @@ typedef struct {
 static _Thread_local Frame frames[FRAMES];
 static _Thread_local CacheEntry bucket_cache[2][32];
 static _Thread_local int base_ply;
+static _Thread_local int frame_source[FRAMES];
+static _Thread_local uint64_t cache_generation;
 static _Thread_local uint64_t seen_old[(AUX + 63) / 64], seen_new[(AUX + 63) / 64];
 
 static uint16_t square_offset[12][64], piece_span[12];
@@ -112,6 +118,11 @@ static int targets(int attacker, int victim) {
 static int target_count(int t) { return t == PAWN ? 4 : t == KING ? 0 : (t == BISHOP || t == ROOK) ? 8 : 10; }
 
 static void feature_tables(void) {
+    for (unsigned mask = 0; mask < 256; mask++) {
+        int n = 0;
+        for (unsigned bits = mask; bits; bits &= bits - 1)
+            group_indices[mask][n++] = (uint16_t)__builtin_ctz(bits);
+    }
     uint32_t global = 0;
     for (int p = 0; p < 12; p++) {
         int n = 0;
@@ -417,11 +428,13 @@ static void build_frame(Frame *f, const Board *b, const Frame *old, bool use_cac
         }
     }
     f->ready = true;
+    f->output_mask = 0;
 }
 
-static const Frame *sync_frame(const Board *b, Frame *scratch, bool fresh) {
+static Frame *sync_frame(const Board *b, Frame *scratch, bool fresh) {
     int idx = b->ply - base_ply;
     if (fresh || idx < 0 || idx >= FRAMES) { build_frame(scratch, b, NULL, false); return scratch; }
+    idx = frame_source[idx];
     Frame *f = &frames[idx];
     if (f->ready) return f;
     const Frame *old = NULL;
@@ -534,7 +547,10 @@ static inline int nonzero_groups(const uint8_t *x, uint16_t *idx) {
     int n = 0;
     for (int c = 0; c < 32; c++) {
         unsigned z = (unsigned)_mm256_movemask_ps(_mm256_castsi256_ps(_mm256_cmpeq_epi32(_mm256_load_si256((const void *)(x + c * 32)), zero)));
-        for (unsigned nz = ~z & 0xffu; nz; nz &= nz - 1) idx[n++] = (uint16_t)(c * 8 + __builtin_ctz(nz));
+        unsigned nz = ~z & 0xffu;
+        __m128i offsets = _mm_load_si128((const void *)group_indices[nz]);
+        _mm_storeu_si128((void *)(idx + n), _mm_add_epi16(offsets, _mm_set1_epi16((short)(c * 8))));
+        n += __builtin_popcount(nz);
     }
     return n;
 }
@@ -678,27 +694,46 @@ bool net_load(const unsigned char *bytes, size_t count) {
         net_tier = "avx512";
         if (__builtin_cpu_supports("avx512vnni")) { forward = forward_vnni; net_tier = "avx512-vnni"; }
     }
-    for (int i = 0; i < FRAMES; i++) frames[i].ready = false;
+    network_generation++;
+    for (int i = 0; i < FRAMES; i++) { frames[i].ready = false; frame_source[i] = i; }
     return true;
 }
 
 void net_prepare(const Board *b) {
     base_ply = b->ply;
-    for (int i = 0; i < FRAMES; i++) frames[i].ready = false;
-    for (int p = 0; p < 2; p++)
-        for (int e = 0; e < 32; e++) {
-            memcpy(bucket_cache[p][e].acc, bias, sizeof bucket_cache[p][e].acc);
-            memset(bucket_cache[p][e].squares, EMPTY_SQUARE, 64);
-        }
+    for (int i = 0; i < FRAMES; i++) { frames[i].ready = false; frame_source[i] = i; }
+    /* Reuse nearby positions across searches, but never across networks. */
+    if (cache_generation != network_generation) {
+        for (int p = 0; p < 2; p++)
+            for (int e = 0; e < 32; e++) {
+                memcpy(bucket_cache[p][e].acc, bias, sizeof bucket_cache[p][e].acc);
+                memset(bucket_cache[p][e].squares, EMPTY_SQUARE, 64);
+            }
+        cache_generation = network_generation;
+    }
     build_frame(&frames[0], b, NULL, true);
 }
 
 void net_push(const Board *b) {
     int i = b->ply - base_ply + 1;
-    if (i > 0 && i < FRAMES) frames[i].ready = false;
+    if (i > 0 && i < FRAMES) { frames[i].ready = false; frame_source[i] = i; }
+}
+
+void net_push_null(const Board *b) {
+    int i = b->ply - base_ply + 1;
+    if (i > 0 && i < FRAMES) {
+        frames[i].ready = false;
+        /* Only the side to move changes: both accumulators stay identical. */
+        frame_source[i] = frame_source[i - 1];
+    }
 }
 
 int net_eval(const Board *b, bool fresh) {
     Frame scratch;
-    return forward(sync_frame(b, &scratch, fresh), b);
+    Frame *f = sync_frame(b, &scratch, fresh);
+    if (!(f->output_mask & (1 << b->side))) {
+        f->output[b->side] = forward(f, b);
+        f->output_mask |= 1 << b->side;
+    }
+    return f->output[b->side];
 }

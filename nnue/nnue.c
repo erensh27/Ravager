@@ -40,9 +40,9 @@ bool nnue_load_file(const char *path) {
     return ok;
 }
 
-void nnue_prepare_search(const Board *b) { if (nnue_loaded) net_prepare(b); }
-void nnue_push_move(const Board *b, Move m) { (void)m; if (nnue_loaded) net_push(b); }
-void nnue_push_null(const Board *b) { if (nnue_loaded) net_push(b); }
+void nnue_prepare_search(const Board *b) { if (nnue_loaded && nnue_enabled) net_prepare(b); }
+void nnue_push_move(const Board *b, Move m) { (void)m; if (nnue_loaded && nnue_enabled) net_push(b); }
+void nnue_push_null(const Board *b) { if (nnue_loaded && nnue_enabled) net_push_null(b); }
 int32_t nnue_raw_output(const Board *b, bool fresh) { return nnue_loaded ? net_eval(b, fresh) : 0; }
 
 int nnue_evaluate_board(const Board *b) {

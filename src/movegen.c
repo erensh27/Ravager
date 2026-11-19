@@ -232,26 +232,7 @@ void generate_captures(Board *b, MoveList *ml) {
     }
 }
 
-/* Fully-legal generation specialized for check evasions. Used by quiescence
- * when in check: emitting only legal evasions is cheaper than generating all
- * pseudo-legal moves and paying make/unmake + legality tests on each one,
- * because in-check positions have few legal moves and many illegal ones. */
-static Bitboard compute_pinned(const Board *b, int king_sq, int side) {
-    int opp = side ^ 1;
-    Bitboard pinned = 0;
-    Bitboard pinners =
-        (rook_attacks(king_sq, 0)   & (b->pieces[opp][ROOK]   | b->pieces[opp][QUEEN])) |
-        (bishop_attacks(king_sq, 0) & (b->pieces[opp][BISHOP] | b->pieces[opp][QUEEN]));
-    while (pinners) {
-        int pinner = lsb_pop(&pinners);
-        Bitboard between = between_table[king_sq][pinner];
-        Bitboard blockers = between & b->occupancy[side];
-        if (popcount(blockers) == 1 && !(between & b->occupancy[opp]))
-            pinned |= blockers;
-    }
-    return pinned;
-}
-
+/* Fully legal check evasions, using the board's maintained checkers and pins. */
 void generate_evasions(Board *b, MoveList *ml) {
     ml->count = 0;
     int side = b->side, opp = side ^ 1;
@@ -260,7 +241,7 @@ void generate_evasions(Board *b, MoveList *ml) {
     Bitboard enemy = b->occupancy[opp];
     Bitboard occ = b->occ_all;
 
-    Bitboard checkers = all_attackers_to(b, king_sq, occ) & enemy;
+    Bitboard checkers = b->checkers;
     int num_checkers = popcount(checkers);
 
     /* King moves (occupancy-aware so captures of protected pieces fail) */
@@ -268,11 +249,7 @@ void generate_evasions(Board *b, MoveList *ml) {
         Bitboard km = king_attack_table[king_sq] & ~own;
         while (km) {
             int to = lsb_pop(&km);
-            Bitboard captured = (1ULL << to) & enemy;
-            b->occ_all &= ~(1ULL << king_sq);
-            if (captured) b->occ_all &= ~captured;
-            bool att = is_square_attacked(b, to, opp);
-            b->occ_all = occ;
+            bool att = attacked_with_occ(b, to, opp, occ & ~(1ULL << king_sq));
             if (!att) add_move(ml, encode_move(king_sq, to, FLAG_NORMAL, 0));
         }
     }
@@ -280,7 +257,7 @@ void generate_evasions(Board *b, MoveList *ml) {
 
     int checker_sq = lsb(checkers);
     Bitboard check_mask = checkers | between_table[king_sq][checker_sq];
-    Bitboard pinned = compute_pinned(b, king_sq, side);
+    Bitboard pinned = b->pinned;
 
     /* Pawns */
     {
@@ -320,10 +297,7 @@ void generate_evasions(Board *b, MoveList *ml) {
 
             if (b->ep_square != NO_SQUARE && (pawn_attack_table[side][from] & (1ULL << b->ep_square))) {
                 Move ep = encode_move(from, b->ep_square, FLAG_EP, 0);
-                make_move(b, ep);
-                bool legal = !is_in_check(b, side);
-                unmake_move(b, ep);
-                if (legal) add_move(ml, ep);
+                if (move_is_legal(b, ep)) add_move(ml, ep);
             }
         }
     }

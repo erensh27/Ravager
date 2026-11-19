@@ -107,7 +107,7 @@ typedef struct {
     Board    board;
     int      id;
     _Atomic uint64_t nodes;
-    uint64_t tbhits;
+    _Atomic uint64_t tbhits;
     int      seldepth, root_depth, completed, score;
     Move     best_pv[MAX_PLY + 1];
     int      best_pv_len;
@@ -167,7 +167,8 @@ static uint64_t total_nodes(void) {
 
 static uint64_t total_tbhits(void) {
     uint64_t n = 0;
-    for (int i = 0; i < thread_count; i++) n += threads[i]->tbhits;
+    for (int i = 0; i < thread_count; i++)
+        n += atomic_load_explicit(&threads[i]->tbhits, memory_order_relaxed);
     return n;
 }
 
@@ -259,7 +260,7 @@ static inline int draw_score(ThreadData *t) {
 }
 
 static inline int captured_type(const Board *b, Move m) {
-    if (move_is_ep(m) || move_is_promo(m)) return PAWN;
+    if (move_is_ep(m) || b->piece_on[move_to(m)] == EMPTY_SQUARE) return PAWN;
     return b->piece_on[move_to(m)] % 6;
 }
 
@@ -448,14 +449,21 @@ static int adjust_eval(const ThreadData *t, int raw, int corr) {
 /* ------------------------------------------------------------------ */
 /* Draw detection. */
 
-static bool is_draw(ThreadData *t, int ply) {
+static bool is_draw(ThreadData *t, const Stack *ss) {
     const Board *b = &t->board;
-    if (b->half_move_clock >= 100 || is_insufficient_material(b)) return true;
-    int idx = t->key_root + ply;
-    int stop = idx - b->half_move_clock;
+    if (b->half_move_clock >= 100) {
+        if (!b->checkers) return true;
+        MoveList evasions;
+        generate_evasions(&t->board, &evasions);
+        return evasions.count != 0;  /* Checkmate takes precedence. */
+    }
+    if (is_insufficient_material(b)) return true;
+    int idx = t->key_root + ss->ply;
+    int span = b->half_move_clock < ss->plies_from_null ? b->half_move_clock : ss->plies_from_null;
+    int stop = idx - span, matches = 0;
     if (stop < 0) stop = 0;
     for (int i = idx - 4; i >= stop; i -= 2)
-        if (t->keys[i] == b->hash) return true;
+        if (t->keys[i] == b->hash && (i > t->key_root || ++matches == 2)) return true;
     return false;
 }
 
@@ -470,7 +478,8 @@ static bool upcoming_repetition(ThreadData *t, const Stack *ss) {
 /* ------------------------------------------------------------------ */
 /* Move picker. */
 
-typedef enum { ST_TT, ST_GEN_NOISY, ST_GOOD_NOISY, ST_KILLER, ST_GEN_QUIET, ST_REMAINING, ST_DONE } Stage;
+typedef enum { ST_TT, ST_GEN_NOISY, ST_GOOD_NOISY, ST_KILLER, ST_GEN_QUIET, ST_REMAINING,
+               ST_GEN_EVASIONS, ST_EVASIONS, ST_DONE } Stage;
 
 typedef struct {
     MoveList list;
@@ -478,16 +487,19 @@ typedef struct {
     Stage stage;
     Move  tt_move, killer;
     bool  skip_quiets;
+    bool  noisy_only, in_check;
     int   see_threshold;
 } Picker;
 
-static void picker_init(Picker *p, Move tt_move, Move killer, int see_threshold) {
+static void picker_init(Picker *p, const Board *b, Move tt_move, Move killer, int see_threshold, bool noisy_only) {
     p->list.count = 0;
     p->idx = 0;
     p->stage = ST_TT;
     p->tt_move = tt_move;
     p->killer = killer;
     p->skip_quiets = false;
+    p->in_check = b->checkers != 0;
+    p->noisy_only = noisy_only && !p->in_check;
     p->see_threshold = see_threshold;
 }
 
@@ -496,10 +508,13 @@ static void score_noisy(const ThreadData *t, const Stack *ss, MoveList *ml, int 
     const Board *b = &t->board;
     for (int i = start; i < ml->count; i++) {
         Move m = ml->moves[i];
-        if (move_is_promo(m) && move_promo(m) != PROMO_QUEEN) { ml->scores[i] = -WINNING_BONUS; continue; }
         int to = move_to(m), cap = captured_type(b, m);
         ml->scores[i] = WINNING_BONUS + mvv[cap] +
                         t->tactical[has_bit(ss->threats, to)][cap][b->piece_on[move_from(m)]][to];
+        if (move_is_promo(m)) {
+            static const int promotion_gain[4] = {2400, 2400, 4800, 9600};
+            ml->scores[i] += promotion_gain[move_promo(m)];
+        }
     }
 }
 
@@ -556,7 +571,7 @@ static int picker_select(Picker *p, const Board *b) {
         int best = p->idx;
         for (int i = p->idx + 1; i < ml->count; i++)
             if (ml->scores[i] > ml->scores[best]) best = i;
-        if (ml->scores[best] >= MIN_WINNING && !see_ge(b, ml->moves[best], p->see_threshold)) {
+        if (!p->in_check && ml->scores[best] >= MIN_WINNING && !see_ge(b, ml->moves[best], p->see_threshold)) {
             ml->scores[best] -= WINNING_BONUS;
             continue;
         }
@@ -571,8 +586,9 @@ static Move picker_next(Picker *p, ThreadData *t, const Stack *ss) {
     Board *b = &t->board;
     for (;;) switch (p->stage) {
     case ST_TT:
-        p->stage = ST_GEN_NOISY;
-        if (p->tt_move != NO_MOVE && (!p->skip_quiets || move_is_noisy(b, p->tt_move)))
+        p->stage = p->in_check ? ST_GEN_EVASIONS : ST_GEN_NOISY;
+        if (p->tt_move != NO_MOVE && (!p->noisy_only ||
+            (move_is_noisy(b, p->tt_move) && see_ge(b, p->tt_move, p->see_threshold))))
             return p->tt_move;
         break;
     case ST_GEN_NOISY:
@@ -587,7 +603,7 @@ static Move picker_next(Picker *p, ThreadData *t, const Stack *ss) {
             if (p->list.moves[i] == p->tt_move) continue;
             return p->list.moves[i];
         }
-        p->stage = p->skip_quiets ? ST_DONE : ST_KILLER;
+        p->stage = p->noisy_only ? ST_DONE : ST_KILLER;
         break;
     }
     case ST_KILLER:
@@ -610,10 +626,28 @@ static Move picker_next(Picker *p, ThreadData *t, const Stack *ss) {
         int i = picker_select(p, b);
         if (i < 0) { p->stage = ST_DONE; return NO_MOVE; }
         p->idx++;
-        if (p->skip_quiets && p->list.scores[i] < MIN_WINNING) { p->stage = ST_DONE; return NO_MOVE; }
         Move m = p->list.moves[i];
+        if (p->skip_quiets && !move_is_noisy(b, m)) continue;
         if (m == p->tt_move || m == p->killer) continue;
         return m;
+    }
+    case ST_GEN_EVASIONS:
+        generate_evasions(b, &p->list);
+        for (int i = 0; i < p->list.count; i++) {
+            Move m = p->list.moves[i];
+            int from = move_from(m), to = move_to(m), piece = b->piece_on[from];
+            p->list.scores[i] = move_is_noisy(b, m)
+                ? WINNING_BONUS + see_values[captured_type(b, m)]
+                : main_history(t, ss, b->side, from, to, piece) + cont_value(ss, 1, piece, to);
+        }
+        p->stage = ST_EVASIONS;
+        break;
+    case ST_EVASIONS: {
+        int i = picker_select(p, b);
+        if (i < 0) { p->stage = ST_DONE; return NO_MOVE; }
+        p->idx++;
+        if (p->list.moves[i] == p->tt_move) continue;
+        return p->list.moves[i];
     }
     case ST_DONE:
     default:
@@ -634,6 +668,7 @@ static inline void do_move(ThreadData *t, Stack *ss, Move m, bool tactical) {
     ss->cont = &t->cont[piece][ss->to];
     nnue_push_move(b, m);
     make_move(b, m);
+    tt_prefetch(b->hash);
     t->keys[t->key_root + ss->ply + 1] = b->hash;
     (ss + 1)->plies_from_null = ss->plies_from_null + 1;
     add_node(t);
@@ -647,9 +682,10 @@ static inline void do_null(ThreadData *t, Stack *ss) {
     ss->piece = -1;
     ss->to = 0;
     ss->tactical = false;
-    ss->cont = &t->cont[b->side * 6 + PAWN][0];
+    ss->cont = NULL;
     nnue_push_null(b);
     make_null_move(b);
+    tt_prefetch(b->hash);
     t->keys[t->key_root + ss->ply + 1] = b->hash;
     (ss + 1)->plies_from_null = 0;
     add_node(t);
@@ -675,7 +711,7 @@ static int qsearch(ThreadData *t, Stack *ss, int alpha, int beta, bool pv_node) 
     if (should_stop(t)) return 0;
     if (pv_node) t->pv_len[ply] = 0;
     if (ply > t->seldepth) t->seldepth = ply;
-    if (is_draw(t, ply)) return draw_score(t);
+    if (is_draw(t, ss)) return draw_score(t);
     bool in_check = b->checkers != 0;
     if (ply >= MAX_PLY - 1) return in_check ? 0 : adjust_eval(t, raw_eval(t), correction(t, ss));
     if (alpha < 0 && upcoming_repetition(t, ss)) {
@@ -684,7 +720,7 @@ static int qsearch(ThreadData *t, Stack *ss, int alpha, int beta, bool pv_node) 
     }
 
     TTHit hit;
-    bool tt_hit = tt_probe(b->hash, ply, &hit);
+    bool tt_hit = tt_probe(b->hash, ply, b->half_move_clock, &hit);
     Move tt_move = NO_MOVE;
     if (tt_hit) {
         tt_move = validated(b, hit.move);
@@ -696,6 +732,7 @@ static int qsearch(ThreadData *t, Stack *ss, int alpha, int beta, bool pv_node) 
         return hit.score;
     ss->ttpv = pv_node || (tt_hit && hit.pv);
 
+    int original_alpha = alpha;
     int raw = SCORE_NONE, stand_pat, corr = 0;
     if (in_check) {
         stand_pat = -INFINITY_SCORE;
@@ -714,18 +751,21 @@ static int qsearch(ThreadData *t, Stack *ss, int alpha, int beta, bool pv_node) 
             tt_store(b->hash, ply, NO_MOVE, SCORE_NONE, raw, BOUND_NONE, 0, ss->ttpv);
             stand_pat = ss->static_eval = adjust_eval(t, raw, corr);
         }
-        if (stand_pat >= beta)
-            return is_decisive(stand_pat) ? stand_pat : (stand_pat + beta) / 2;
+        if (stand_pat >= beta) {
+            int score = is_decisive(stand_pat) ? stand_pat : (stand_pat + beta) / 2;
+            if (!tt_hit)
+                tt_store(b->hash, ply, NO_MOVE, score, raw, BOUND_LOWER, 0, ss->ttpv);
+            return score;
+        }
         if (stand_pat > alpha) alpha = stand_pat;
     }
     compute_threats(b, ss);
 
-    int original_alpha = alpha, best_score = stand_pat, moves_made = 0;
+    int best_score = stand_pat, moves_made = 0;
     Move best_move = NO_MOVE;
     int futility = stand_pat + QS_FUTILITY;
     Picker p;
-    picker_init(&p, tt_move, NO_MOVE, QS_SEE_BOUND);
-    p.skip_quiets = !in_check;
+    picker_init(&p, b, tt_move, NO_MOVE, QS_SEE_BOUND, true);
     Move m;
     while ((m = picker_next(&p, t, ss)) != NO_MOVE) {
         if (!move_is_legal(b, m)) continue;
@@ -738,7 +778,6 @@ static int qsearch(ThreadData *t, Stack *ss, int alpha, int beta, bool pv_node) 
         }
         do_move(t, ss, m, tactical);
         (ss + 1)->ply = ply + 1;
-        if (best_score > -TB_WIN_BOUND) p.skip_quiets = true;
         moves_made++;
         int score = -qsearch(t, ss + 1, -beta, -alpha, pv_node);
         undo_move(t, m);
@@ -797,7 +836,7 @@ static int negamax(ThreadData *t, Stack *ss, int alpha, int beta, int depth, boo
     bool in_check = b->checkers != 0;
 
     if (!root) {
-        if (is_draw(t, ply)) return draw_score(t);
+        if (is_draw(t, ss)) return draw_score(t);
         if (ply >= MAX_PLY - 1) return in_check ? 0 : adjust_eval(t, raw_eval(t), correction(t, ss));
         alpha = alpha > mated_in(ply) ? alpha : mated_in(ply);
         beta = beta < mate_in(ply + 1) ? beta : mate_in(ply + 1);
@@ -812,7 +851,7 @@ static int negamax(ThreadData *t, Stack *ss, int alpha, int beta, int depth, boo
     TTHit hit;
     bool tt_hit = false;
     Move tt_move = NO_MOVE;
-    if (excluded == NO_MOVE && tt_probe(b->hash, ply, &hit)) {
+    if (excluded == NO_MOVE && tt_probe(b->hash, ply, b->half_move_clock, &hit)) {
         tt_hit = true;
         tt_move = validated(b, hit.move);
         if (hit.move != NO_MOVE && tt_move == NO_MOVE) tt_hit = false;
@@ -838,7 +877,7 @@ static int negamax(ThreadData *t, Stack *ss, int alpha, int beta, int depth, boo
     /* Tablebases. */
     int syzygy_min = -MATE_SCORE, syzygy_max = MATE_SCORE, wdl;
     if (!root && excluded == NO_MOVE && syzygy_probe_wdl(b, &wdl)) {
-        t->tbhits++;
+        atomic_fetch_add_explicit(&t->tbhits, 1, memory_order_relaxed);
         int tb_score = wdl > 0 ? TB_WIN_SCORE - ply : wdl < 0 ? -TB_WIN_SCORE + ply : draw_score(t);
         int tb_bound = wdl > 0 ? BOUND_LOWER : wdl < 0 ? BOUND_UPPER : BOUND_EXACT;
         if (tb_bound == BOUND_EXACT || (tb_bound == BOUND_LOWER && tb_score >= beta) ||
@@ -958,8 +997,7 @@ static int negamax(ThreadData *t, Stack *ss, int alpha, int beta, int depth, boo
         int depth_base = depth - 3 - (static_eval - beta) / PROBCUT_EVAL_DIV;
         int see_pivot = (pc_beta - static_eval) * PROBCUT_SEE_SCALE / 256;
         Picker p;
-        picker_init(&p, tt_capture ? tt_move : NO_MOVE, NO_MOVE, see_pivot);
-        p.skip_quiets = true;
+        picker_init(&p, b, tt_capture ? tt_move : NO_MOVE, NO_MOVE, see_pivot, true);
         Move m;
         while ((m = picker_next(&p, t, ss)) != NO_MOVE) {
             if (!move_is_legal(b, m)) continue;
@@ -1026,7 +1064,7 @@ static int negamax(ThreadData *t, Stack *ss, int alpha, int beta, int depth, boo
     int see_table[2] = {SEE_NOISY_MARGIN * depth * depth, SEE_QUIET_MARGIN * depth};
 
     Picker p;
-    picker_init(&p, tt_move, killer, MAIN_SEE_BOUND);
+    picker_init(&p, b, tt_move, killer, MAIN_SEE_BOUND, false);
     Move m;
     while ((m = picker_next(&p, t, ss)) != NO_MOVE) {
         if (m == excluded) continue;
@@ -1061,7 +1099,7 @@ static int negamax(ThreadData *t, Stack *ss, int alpha, int beta, int depth, boo
                 !move_gives_check(b, m))
                 p.skip_quiets = true;
         }
-        if (!root && best_score > -TB_WIN_BOUND && p.stage > ST_GOOD_NOISY &&
+        if (!root && !in_check && best_score > -TB_WIN_BOUND && p.stage > ST_GOOD_NOISY &&
             !see_ge(b, m, see_table[quiet] - stat * SEE_HIST_MUL / 1024))
             continue;
 
@@ -1155,7 +1193,8 @@ static int negamax(ThreadData *t, Stack *ss, int alpha, int beta, int depth, boo
     if (excluded == NO_MOVE) {
         if (raw != SCORE_NONE) {
             int fresh = adjust_eval(t, raw, correction(t, ss));
-            if (!in_check && !(best_move != NO_MOVE && move_is_noisy(b, best_move) && see_ge(b, best_move, 0)) &&
+            if (!in_check && !is_decisive(best_score) &&
+                !(best_move != NO_MOVE && move_is_noisy(b, best_move) && see_ge(b, best_move, 0)) &&
                 !(bound == BOUND_LOWER && best_score <= fresh) && !(bound == BOUND_UPPER && best_score >= fresh))
                 update_correction(t, ss, depth, complexity, best_score - fresh);
         }
@@ -1302,25 +1341,33 @@ static ThreadData *select_best_thread(void) {
     int min_score = INFINITY_SCORE;
     for (int i = 0; i < thread_count; i++)
         if (threads[i]->completed > 0 && threads[i]->score < min_score) min_score = threads[i]->score;
-    int64_t votes[64 * 64];
+    int64_t votes[thread_count];
+    int vote_index[thread_count];
     memset(votes, 0, sizeof votes);
     for (int i = 0; i < thread_count; i++) {
         ThreadData *t = threads[i];
+        vote_index[i] = i;
         if (!t->completed || !t->best_pv_len) continue;
-        Move m = t->best_pv[0];
-        votes[move_from(m) * 64 + move_to(m)] += (int64_t)(t->score - min_score + 10) * t->completed;
+        for (int j = 0; j < i; j++)
+            if (threads[j]->completed && threads[j]->best_pv_len && threads[j]->best_pv[0] == t->best_pv[0]) {
+                vote_index[i] = vote_index[j];
+                break;
+            }
+        votes[vote_index[i]] += (int64_t)(t->score - min_score + 10) * t->completed;
     }
     for (int i = 1; i < thread_count; i++) {
         ThreadData *t = threads[i];
         if (!t->completed || !t->best_pv_len) continue;
         if (!best->best_pv_len) { best = t; continue; }
-        if (is_decisive(best->score)) {
-            if (abs(t->score) > abs(best->score)) best = t;
+        if (best->score >= TB_WIN_BOUND || t->score >= TB_WIN_BOUND) {
+            if (t->score > best->score) best = t;
             continue;
         }
-        if (t->score >= TB_WIN_BOUND) { best = t; continue; }
-        Move bm = best->best_pv[0], tm = t->best_pv[0];
-        int64_t bv = votes[move_from(bm) * 64 + move_to(bm)], tv = votes[move_from(tm) * 64 + move_to(tm)];
+        if (best->score <= -TB_WIN_BOUND || t->score <= -TB_WIN_BOUND) {
+            if (t->score > best->score) best = t;
+            continue;
+        }
+        int64_t bv = votes[vote_index[best->id]], tv = votes[vote_index[t->id]];
         if (tv > bv || (tv == bv && (int64_t)(t->score - min_score + 10) * t->completed >
                                     (int64_t)(best->score - min_score + 10) * best->completed))
             best = t;

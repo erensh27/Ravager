@@ -51,8 +51,27 @@ windows: $(SRC) $(wildcard src/*.h src/tb/*.h nnue/*.h) $(EVALFILE)
 bench: $(TARGET)
 	./$(TARGET) bench
 
+ifeq ($(OS),Windows_NT)
+TEST_EXT := .exe
+endif
+TEST_BINS := tests/search-test$(TEST_EXT) tests/nnue-test$(TEST_EXT) tests/tablebase-test$(TEST_EXT)
+
+tests/search-test$(TEST_EXT): tests/search.c src/search.c $(filter-out src/uci.o src/search.o,$(OBJ))
+	$(CC) $(CPPFLAGS) $(CFLAGS) -UNDEBUG -o $@ tests/search.c $(filter-out src/uci.o src/search.o,$(OBJ)) $(LDFLAGS) $(LDLIBS)
+
+tests/nnue-test$(TEST_EXT): tests/nnue.c nnue/inference.c $(filter-out src/uci.o nnue/inference.o,$(OBJ))
+	$(CC) $(CPPFLAGS) $(CFLAGS) -UNDEBUG -o $@ tests/nnue.c $(filter-out src/uci.o nnue/inference.o,$(OBJ)) $(LDFLAGS) $(LDLIBS)
+
+tests/tablebase-test$(TEST_EXT): tests/tablebase.c src/tb_syzygy.c src/board.o src/bitboard.o src/movegen.o src/params.o
+	$(CC) $(CPPFLAGS) $(CFLAGS) -UNDEBUG -o $@ tests/tablebase.c src/board.o src/bitboard.o src/movegen.o src/params.o $(LDFLAGS) $(LDLIBS)
+
+test: $(TEST_BINS)
+	./tests/search-test$(TEST_EXT)
+	./tests/nnue-test$(TEST_EXT)
+	./tests/tablebase-test$(TEST_EXT)
+
 clean:
-	rm -f $(OBJ) $(DEP) $(TARGET) $(RELEASE) $(WINDOWS)
+	rm -f $(OBJ) $(DEP) $(TARGET) $(RELEASE) $(WINDOWS) $(TEST_BINS)
 
 -include $(DEP)
-.PHONY: all release windows bench clean
+.PHONY: all release windows bench test clean

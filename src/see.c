@@ -43,10 +43,24 @@ bool see_ge(const Board *b, Move m, int threshold) {
     if (move_is_ep(m)) occ ^= 1ULL << ((b->side == WHITE) ? to - 8 : to + 8);
 
     Bitboard attackers = all_attackers_to(b, to, occ) & occ;
+    int kings[2] = {lsb(b->pieces[WHITE][KING]), lsb(b->pieces[BLACK][KING])};
+    Bitboard pinners[2];
+    for (int c = 0; c < 2; c++)
+        pinners[c] = ((rook_attacks(kings[c], 0) & rooks) |
+                      (bishop_attacks(kings[c], 0) & bishops)) & b->occupancy[c ^ 1] & ~(1ULL << to);
     int side = b->side ^ 1;
 
     for (;;) {
         Bitboard mine = attackers & b->occupancy[side];
+        /* Recompute blockers as exchanges uncover pins or remove pinners.
+         * A pinned recapture is legal only along its king's pin ray. */
+        for (Bitboard pins = pinners[side] & occ; pins; pins &= pins - 1) {
+            int sniper = lsb(pins);
+            Bitboard blockers = between_table[kings[side]][sniper] & occ;
+            if (blockers && !(blockers & (blockers - 1)) &&
+                !(ray_table[kings[side]][sniper] & (1ULL << to)))
+                mine &= ~blockers;
+        }
         if (!mine) break;
         for (next = PAWN; next <= KING; next++)
             if (mine & b->pieces[side][next]) break;
