@@ -20,7 +20,7 @@ typedef struct {
 bool tt_alloc(int mb);
 void tt_clear(void);
 void tt_new_search(void);
-bool tt_probe(uint64_t hash, int ply, TTHit *hit);
+bool tt_probe(uint64_t hash, int ply, int rule50, TTHit *hit);
 void tt_store(uint64_t hash, int ply, Move move, int score, int eval,
               int bound, int depth, bool pv);
 int  tt_hashfull(void);

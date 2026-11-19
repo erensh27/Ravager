@@ -240,13 +240,20 @@ static void handle_setoption(const char *line) {
         int mo = atoi(value);
         move_overhead_ms = mo < 0 ? 0 : mo > 5000 ? 5000 : mo;
     } else if (!strcasecmp(name, "Use NNUE")) {
-        nnue_enabled = on;
-    } else if (!strcasecmp(name, "EvalFile")) {
-        if (*value && strcmp(value, "<empty>")) {
-            if (!nnue_load_file(value)) printf("info string network load failed; previous network kept\n");
-        } else {
-            nnue_load_embedded();
+        if (nnue_enabled != on) {
+            nnue_enabled = on;
+            tt_clear();
+            search_clear();
         }
+    } else if (!strcasecmp(name, "EvalFile")) {
+        bool loaded;
+        if (*value && strcmp(value, "<empty>")) {
+            loaded = nnue_load_file(value);
+        } else {
+            loaded = nnue_load_embedded();
+        }
+        if (loaded) { tt_clear(); search_clear(); }
+        else printf("info string network load failed; previous network kept\n");
     } else if (!strcasecmp(name, "SyzygyPath")) {
         syzygy_init(value);
     } else if (!strcasecmp(name, "SyzygyProbeLimit")) {

@@ -338,7 +338,10 @@ void make_move(Board *b, Move m) {
     }
 
     if(flags==FLAG_CASTLE) castle_relocate(b,side,from,to,false);
-    else {
+    else if (flags != FLAG_PROMO) {
+        b->hash ^= zobrist_piece[side][piece][from] ^ zobrist_piece[side][piece][to];
+        move_piece_bb(b, side, piece, from, to);
+    } else {
         b->hash ^= zobrist_piece[side][piece][from] ^ zobrist_piece[side][placed][to];
         remove_piece(b, side, piece, from);
         put_piece(b, side, placed, to);
@@ -347,7 +350,8 @@ void make_move(Board *b, Move m) {
     uint8_t old_cr = b->castling_rights;
     b->castling_rights &= b->castle_mask[from];
     b->castling_rights &= b->castle_mask[to];
-    b->hash ^= castle_key(b,old_cr) ^ castle_key(b,b->castling_rights);
+    if (old_cr != b->castling_rights)
+        b->hash ^= castle_key(b,old_cr) ^ castle_key(b,b->castling_rights);
 
     /* Only set ep square if an enemy pawn could actually capture there
      * (keeps hash keys cleaner — conditional ep) */
@@ -391,7 +395,9 @@ void unmake_move(Board *b, Move m) {
     if (flags == FLAG_PROMO) piece = PAWN;
 
     if (flags == FLAG_CASTLE) castle_relocate(b,side,from,to,true);
-    else {
+    else if (flags != FLAG_PROMO) {
+        move_piece_bb(b, side, piece, to, from);
+    } else {
         remove_piece(b, side, placed, to);
         put_piece(b, side, piece, from);
     }
@@ -525,7 +531,15 @@ bool board_upcoming_repetition(const Board *b, const uint64_t *keys, int idx, in
             if (cuckoo_keys[j] != diff) continue;
         }
         Move m = cuckoo_moves[j];
-        if (!(between_table[move_from(m)][move_to(m)] & b->occ_all)) return true;
+        int from = move_from(m), to = move_to(m);
+        if (between_table[from][to] & b->occ_all) continue;
+        if (!(b->occupancy[b->side] & (1ULL << from))) {
+            int tmp = from; from = to; to = tmp;
+        }
+        m = encode_move(from, to, FLAG_NORMAL, 0);
+        if ((b->castling_rights & b->castle_mask[from] & b->castle_mask[to]) != b->castling_rights)
+            continue;
+        if (move_is_pseudo_legal(b, m) && move_is_legal(b, m)) return true;
     }
     return false;
 }

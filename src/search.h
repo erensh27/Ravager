@@ -4,10 +4,6 @@
 
 #include "ravager.h"
 
-#define TB_WIN_SCORE  30000
-#define TB_WIN_BOUND  (TB_WIN_SCORE - 2 * MAX_PLY)
-#define EVAL_LIMIT    (TB_WIN_BOUND - 1)
-
 typedef struct {
     int      time[2], inc[2];   /* milliseconds, indexed by colour */
     int      movestogo;

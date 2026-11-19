@@ -71,15 +71,19 @@ void tt_new_search(void) { generation = (uint8_t)(generation + GEN_STEP); }
 
 static inline int score_to_tt(int score, int ply) {
     if (score == SCORE_NONE) return score;
-    if (score >= MATE_BOUND) return score + ply;
-    if (score <= -MATE_BOUND) return score - ply;
+    if (score >= TB_WIN_BOUND) return score + ply;
+    if (score <= -TB_WIN_BOUND) return score - ply;
     return score;
 }
 
-static inline int score_from_tt(int score, int ply) {
+static inline int score_from_tt(int score, int ply, int rule50) {
     if (score == SCORE_NONE) return score;
-    if (score >= MATE_BOUND) return score - ply;
-    if (score <= -MATE_BOUND) return score + ply;
+    /* A cached decisive distance may outlive the reversible-move budget. */
+    int distance = (abs(score) >= MATE_BOUND ? MATE_SCORE : TB_WIN_SCORE) - abs(score);
+    if (score >= TB_WIN_BOUND)
+        return distance > 100 - rule50 ? EVAL_LIMIT : score - ply;
+    if (score <= -TB_WIN_BOUND)
+        return distance > 100 - rule50 ? -EVAL_LIMIT : score + ply;
     return score;
 }
 
@@ -88,14 +92,14 @@ static inline int age_of(const TTEntry *e) {
     return ((GEN_CYCLE + generation - e->genbound) & 0xF8) / GEN_STEP;
 }
 
-bool tt_probe(uint64_t hash, int ply, TTHit *hit) {
+bool tt_probe(uint64_t hash, int ply, int rule50, TTHit *hit) {
     TTBucket *bucket = bucket_of(hash);
     uint16_t key = (uint16_t)hash;
     for (int i = 0; i < BUCKET_SIZE; i++) {
         TTEntry e = bucket->entry[i];
         if (e.key != key || !e.depth) continue;
         hit->move  = e.move;
-        hit->score = score_from_tt(e.score, ply);
+        hit->score = score_from_tt(e.score, ply, rule50);
         hit->eval  = e.eval;
         hit->depth = e.depth - 1;
         hit->bound = e.genbound & 3;
@@ -132,7 +136,7 @@ void tt_store(uint64_t hash, int ply, Move move, int score, int eval,
 
 Move tt_probe_move(uint64_t hash) {
     TTHit hit;
-    return tt_probe(hash, 0, &hit) ? hit.move : NO_MOVE;
+    return tt_probe(hash, 0, 0, &hit) ? hit.move : NO_MOVE;
 }
 
 void tt_prefetch(uint64_t hash) {
