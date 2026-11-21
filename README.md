@@ -1,6 +1,6 @@
 # Ravager 3
 
-<img src="assets/ravager.png" alt="Ravager Logo" width="1024"/>
+<img src="assets/ravager-banner.png" alt="Ravager Logo" width="1024"/>
 
 A UCI chess engine written in C11, pairing a modern alpha-beta search with an embedded NNUE and a tuned handcrafted evaluation fallback.
 
