@@ -23,13 +23,14 @@ make windows    # portable Windows build with MinGW-w64
 
 The network is embedded into the binary at compile time (`EVALFILE`, default `nets/Ravager_NET.nnue`).
 
-## Strength
+## Playing Strength
 
-| Version | [CCRL 40/15](https://computerchess.org.uk/ccrl/4040/rating_list_all.html) | [CCRL 40/2 FRC](https://computerchess.org.uk/404FRC/) | [IPMAN](https://ipmanchess.yolasite.com/r9-7945hx-ai-engines.php) | [CCI VLTC](https://computer-chess-index.github.io/cci/CCIRatings2.html) |
-| ------- | ---------- | ------------- | ----- | -------- |
-| [Ravager 3](https://github.com/erensh27/Ravager/releases/tag/v3) | TBD | 4039<br>(14th) | 3562 | 3721 |
-| [Ravager Fury/3.3.0](https://github.com/erensh27/Ravager/releases/tag/v3.3.0) | 3542 | - | - | 3559 |
-| Ravager 2 | 3329 | - | - | 3349 |
+| List | Rating | Rank | Version | Notes |
+| ---- | ------ | ---- | ------- | ----- |
+| [CCRL 40/15](https://computerchess.org.uk/4040/cgi/engine_details.cgi?print=Details&each_game=0&eng=Ravager%203.0%2064-bit#Ravager_3_0_64-bit) | 3601 | - | 3 | 1 CPU |
+| [CCRL 2+1 Blitz](https://computerchess.org.uk/404/cgi/engine_details.cgi?print=Details&each_game=1&eng=Ravager%203%2064-bit#Ravager_3_64-bit) | 3734 | #21 | 3 | 1 CPU |
+| [CCRL 40/2 FRC](https://computerchess.org.uk/404FRC/cgi/engine_details.cgi?print=Details&each_game=1&eng=Ravager%203#Ravager_3) | 4039 | #14 | 3 | Fischer Random Chess |
+| [IPMAN](https://ipmanchess.yolasite.com/r9-7945hx-ai-engines.php) | 3555 | #8 | 3 | AMD R9 7945HX |
 
 ## Search
 
