@@ -1096,8 +1096,10 @@ static int negamax(ThreadData *t, Stack *ss, int alpha, int beta, int depth, boo
                 continue;
             }
             if (quiet && lmr_depth < 6 && static_eval + lmr_depth * FUT_MUL + FUT_BASE + stat / 128 <= alpha &&
-                !move_gives_check(b, m))
+                !move_gives_check(b, m)) {
                 p.skip_quiets = true;
+                continue;
+            }
         }
         if (!root && !in_check && best_score > -TB_WIN_BOUND && p.stage > ST_GOOD_NOISY &&
             !see_ge(b, m, see_table[quiet] - stat * SEE_HIST_MUL / 1024))
