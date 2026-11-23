@@ -13,6 +13,7 @@
 
 
 static int hash_mb = DEFAULT_TT_MB;
+static int multi_pv = 1;
 
 /* ---- game state ---- */
 #define GAME_HISTORY 1024
@@ -162,14 +163,35 @@ static void parse_position(char *line) {
 }
 
 /* ---- go ---- */
+static bool is_go_keyword(const char *s) {
+    static const char *const keywords[] = {
+        "searchmoves", "ponder", "wtime", "btime", "winc", "binc",
+        "movestogo", "depth", "nodes", "mate", "movetime", "infinite"
+    };
+    for (size_t i = 0; i < sizeof keywords / sizeof keywords[0]; i++)
+        if (!strcmp(s, keywords[i])) return true;
+    return false;
+}
+
 static void parse_go(char *line) {
     SearchLimits lim;
     memset(&lim, 0, sizeof lim);
-    char *save = NULL;
-    for (char *tok = strtok_r(line, " \t", &save); tok; tok = strtok_r(NULL, " \t", &save)) {
-        char *arg;
-#define NEXT_INT() ((arg = strtok_r(NULL, " \t", &save)) ? atoll(arg) : 0)
-        if      (!strcmp(tok, "wtime"))     lim.time[WHITE] = (int)NEXT_INT();
+    char *save = NULL, *tokens[512];
+    int nt = 0;
+    for (char *tok = strtok_r(line, " \t", &save); tok && nt < 512;
+         tok = strtok_r(NULL, " \t", &save))
+        tokens[nt++] = tok;
+    for (int i = 0; i < nt;) {
+        char *tok = tokens[i++];
+#define NEXT_INT() (i < nt ? atoll(tokens[i++]) : 0)
+        if (!strcmp(tok, "searchmoves")) {
+            while (i < nt && !is_go_keyword(tokens[i])) {
+                Move m = parse_legal_move(&main_board, tokens[i++]);
+                if (m != NO_MOVE && lim.searchmoves_count < MAX_MOVES)
+                    lim.searchmoves[lim.searchmoves_count++] = m;
+            }
+        }
+        else if (!strcmp(tok, "wtime"))     lim.time[WHITE] = (int)NEXT_INT();
         else if (!strcmp(tok, "btime"))     lim.time[BLACK] = (int)NEXT_INT();
         else if (!strcmp(tok, "winc"))      lim.inc[WHITE] = (int)NEXT_INT();
         else if (!strcmp(tok, "binc"))      lim.inc[BLACK] = (int)NEXT_INT();
@@ -193,6 +215,7 @@ static void print_options(void) {
     printf("id author %s\n", ENGINE_AUTHOR);
     printf("option name Hash type spin default %d min 1 max 65536\n", DEFAULT_TT_MB);
     printf("option name Threads type spin default 1 min 1 max 1024\n");
+    printf("option name MultiPV type spin default 1 min 1 max %d\n", MAX_MULTIPV);
     printf("option name Clear Hash type button\n");
     printf("option name Ponder type check default false\n");
     printf("option name UCI_Chess960 type check default false\n");
@@ -232,6 +255,10 @@ static void handle_setoption(const char *line) {
     } else if (!strcasecmp(name, "Threads")) {
         int n_threads = atoi(value);
         search_set_threads(n_threads < 1 ? 1 : n_threads > 1024 ? 1024 : n_threads);
+    } else if (!strcasecmp(name, "MultiPV")) {
+        multi_pv = atoi(value);
+        multi_pv = multi_pv < 1 ? 1 : multi_pv > MAX_MULTIPV ? MAX_MULTIPV : multi_pv;
+        search_set_multipv(multi_pv);
     } else if (!strcasecmp(name, "Clear Hash")) {
         tt_clear();
     } else if (!strcasecmp(name, "UCI_Chess960")) {
