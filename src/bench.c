@@ -56,8 +56,9 @@ static const char *bench_fens[] = {
 /* Fixed-depth search over a small suite; prints total nodes and speed. */
 void run_bench(int depth) {
     if (depth <= 0) depth = 13;
-    int saved = search_verbose;
+    int saved = search_verbose, saved_mp = search_get_multipv();
     search_verbose = 0;
+    search_set_multipv(1);
     uint64_t total = 0;
     struct timespec a, z;
     clock_gettime(CLOCK_MONOTONIC, &a);
@@ -76,6 +77,7 @@ void run_bench(int depth) {
     clock_gettime(CLOCK_MONOTONIC, &z);
     double secs = (double)(z.tv_sec - a.tv_sec) + (double)(z.tv_nsec - a.tv_nsec) / 1e9;
     search_verbose = saved;
+    search_set_multipv(saved_mp);
     printf("%llu nodes %.0f nps\n", (unsigned long long)total, secs > 0 ? total / secs : 0.0);
     fflush(stdout);
 }

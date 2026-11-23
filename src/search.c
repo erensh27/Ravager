@@ -38,6 +38,8 @@ void eval_clear_pawn_hash(void);                /* evaluate.c */
 int search_verbose = 1;
 int move_overhead_ms = 20;
 
+static int multi_pv = 1;
+
 /* ------------------------------------------------------------------ */
 /* Parameters (search-scale units: the network's centipawn-like scale). */
 
@@ -119,6 +121,10 @@ typedef struct {
     int      optimism[2];
     bool     nmp_banned[2];
     uint64_t root_nodes[64][64];
+    Move     root_moves[MAX_MOVES];      /* legal root moves after searchmoves */
+    int      root_move_count;
+    Move     root_skip[MAX_MULTIPV];     /* MultiPV: already reported moves */
+    int      root_skip_count;
     int16_t  from_to[2][2][2][64][64];   /* [side][from threatened][to threatened] */
     int16_t  piece_to[2][2][12][64];
     int16_t  tactical[2][6][12][64];     /* [to threatened][captured][piece][to] */
@@ -265,6 +271,22 @@ static inline int captured_type(const Board *b, Move m) {
 }
 
 static inline bool has_bit(Bitboard bb, int sq) { return (bb >> sq) & 1; }
+
+/* Root move filter: go searchmoves and the current MultiPV line. */
+static inline bool root_move_allowed(const ThreadData *t, Move m) {
+    for (int i = 0; i < t->root_skip_count; i++)
+        if (t->root_skip[i] == m) return false;
+    for (int i = 0; i < t->root_move_count; i++)
+        if (t->root_moves[i] == m) return true;
+    return t->root_move_count == 0;
+}
+
+static bool searchmoves_allows(const SearchLimits *lim, Move m) {
+    if (lim->searchmoves_count == 0) return true;
+    for (int i = 0; i < lim->searchmoves_count; i++)
+        if (lim->searchmoves[i] == m) return true;
+    return false;
+}
 
 /* Squares attacked by the opponent, split by attacker class. */
 static void compute_threats(const Board *b, Stack *ss) {
@@ -1069,6 +1091,7 @@ static int negamax(ThreadData *t, Stack *ss, int alpha, int beta, int depth, boo
     while ((m = picker_next(&p, t, ss)) != NO_MOVE) {
         if (m == excluded) continue;
         if (!move_is_legal(b, m)) continue;
+        if (root && !root_move_allowed(t, m)) continue;
         bool quiet = !move_is_noisy(b, m);
         int from = move_from(m), piece = b->piece_on[from];
         int stat = quiet ? quiet_stat(t, ss, m, piece) / 32 : tactical_stat(t, ss, m, piece) / 32;
@@ -1190,7 +1213,7 @@ static int negamax(ThreadData *t, Stack *ss, int alpha, int beta, int depth, boo
     if (!root && bound == BOUND_UPPER && (n_quiets > 0 || depth > 3))
         update_inbound(t, ss, hist_bonus(&H_MAIN, depth));
 
-    if (excluded == NO_MOVE) {
+    if (excluded == NO_MOVE && !(root && t->root_skip_count > 0)) {
         if (raw != SCORE_NONE) {
             int fresh = adjust_eval(t, raw, correction(t, ss));
             if (!in_check && !is_decisive(best_score) &&
@@ -1212,14 +1235,16 @@ static void print_score(char *buf, size_t n, int score) {
     else snprintf(buf, n, "cp %d", score);
 }
 
-static void report(ThreadData *t, int depth, int score, int bound, const Move *pv, int pv_len) {
+static void report(ThreadData *t, int depth, int score, int bound, const Move *pv, int pv_len,
+                   int multipv) {
     if (!search_verbose) return;
     int64_t ms = elapsed_ms();
     uint64_t nodes = total_nodes();
-    char sc[32];
+    char sc[32], mp[24] = "";
     print_score(sc, sizeof sc, score);
-    printf("info depth %d seldepth %d score %s%s nodes %llu nps %llu hashfull %d tbhits %llu time %lld pv",
-           depth, t->seldepth, sc,
+    if (multipv > 0) snprintf(mp, sizeof mp, " multipv %d", multipv);
+    printf("info depth %d seldepth %d%s score %s%s nodes %llu nps %llu hashfull %d tbhits %llu time %lld pv",
+           depth, t->seldepth, mp, sc,
            bound == BOUND_LOWER ? " lowerbound" : bound == BOUND_UPPER ? " upperbound" : "",
            (unsigned long long)nodes, (unsigned long long)(ms > 0 ? nodes * 1000 / (uint64_t)ms : nodes),
            tt_hashfull(), (unsigned long long)total_tbhits(), (long long)ms);
@@ -1240,10 +1265,16 @@ static void iterative_deepening(ThreadData *t) {
     int average = SCORE_NONE;
     Stack *ss = &t->stack[STACK_OFFSET];
     int mate_hits = 0;
+    int n_lines = 1;
+    if (t->id == 0 && multi_pv > 1) {
+        n_lines = multi_pv < t->root_move_count ? multi_pv : t->root_move_count;
+        if (n_lines < 1) n_lines = 1;
+    }
 
     for (int depth = 1; depth <= max_depth; depth++) {
         t->root_depth = depth;
         t->seldepth = 0;
+        t->root_skip_count = 0;
         t->optimism[0] = t->optimism[1] = 0;
         int alpha = -INFINITY_SCORE, beta = INFINITY_SCORE, delta = ASP_DELTA, fail_high = 0;
         if (depth > 1 && average != SCORE_NONE) {
@@ -1254,45 +1285,90 @@ static void iterative_deepening(ThreadData *t) {
             beta = clampi(average + delta, -INFINITY_SCORE, INFINITY_SCORE);
         }
         int score;
-        for (;;) {
-            int draft = depth - fail_high;
-            if (draft < (depth + 1) / 2) draft = (depth + 1) / 2;
-            if (draft < 1) draft = 1;
-            score = negamax(t, ss, alpha, beta, draft, false, true);
-            if (stopped()) break;
-            if (score <= alpha) {
-                beta = (alpha + beta) / 2;
-                alpha = clampi(score - delta, -INFINITY_SCORE, INFINITY_SCORE);
-                fail_high = 0;
-                if (t->id == 0) {
-                    if (time_managed && tm_failed_low < 2) { tm_failed_low++; tm_rescale(-1); }
-                    if (elapsed_ms() > 2000) report(t, depth, score, BOUND_UPPER, t->best_pv, t->best_pv_len);
+        if (n_lines == 1) {
+            for (;;) {
+                int draft = depth - fail_high;
+                if (draft < (depth + 1) / 2) draft = (depth + 1) / 2;
+                if (draft < 1) draft = 1;
+                score = negamax(t, ss, alpha, beta, draft, false, true);
+                if (stopped()) break;
+                if (score <= alpha) {
+                    beta = (alpha + beta) / 2;
+                    alpha = clampi(score - delta, -INFINITY_SCORE, INFINITY_SCORE);
+                    fail_high = 0;
+                    if (t->id == 0) {
+                        if (time_managed && tm_failed_low < 2) { tm_failed_low++; tm_rescale(-1); }
+                        if (elapsed_ms() > 2000) report(t, depth, score, BOUND_UPPER, t->best_pv, t->best_pv_len, 0);
+                    }
+                } else if (score >= beta) {
+                    beta = clampi(score + delta, -INFINITY_SCORE, INFINITY_SCORE);
+                    if (!is_decisive(score)) fail_high++;
+                    if (t->pv_len[0] > 0) {
+                        memcpy(t->best_pv, t->pv[0], (size_t)t->pv_len[0] * sizeof(Move));
+                        t->best_pv_len = t->pv_len[0];
+                    }
+                    if (t->id == 0 && elapsed_ms() > 2000) report(t, depth, score, BOUND_LOWER, t->best_pv, t->best_pv_len, 0);
+                } else {
+                    if (t->pv_len[0] > 0) {
+                        memcpy(t->best_pv, t->pv[0], (size_t)t->pv_len[0] * sizeof(Move));
+                        t->best_pv_len = t->pv_len[0];
+                    }
+                    break;
                 }
-            } else if (score >= beta) {
-                beta = clampi(score + delta, -INFINITY_SCORE, INFINITY_SCORE);
-                if (!is_decisive(score)) fail_high++;
-                if (t->pv_len[0] > 0) {
-                    memcpy(t->best_pv, t->pv[0], (size_t)t->pv_len[0] * sizeof(Move));
-                    t->best_pv_len = t->pv_len[0];
-                }
-                if (t->id == 0 && elapsed_ms() > 2000) report(t, depth, score, BOUND_LOWER, t->best_pv, t->best_pv_len);
-            } else {
-                if (t->pv_len[0] > 0) {
-                    memcpy(t->best_pv, t->pv[0], (size_t)t->pv_len[0] * sizeof(Move));
-                    t->best_pv_len = t->pv_len[0];
-                }
-                break;
+                delta += delta * (ASP_GROWTH + 19 * fail_high) / 128;
             }
-            delta += delta * (ASP_GROWTH + 19 * fail_high) / 128;
+            if (stopped()) break;
+
+            t->completed = depth;
+            t->score = score;
+            average = average == SCORE_NONE ? score : (2 * score + average) / 3;
+
+            if (t->id != 0) continue;
+            report(t, depth, score, BOUND_EXACT, t->best_pv, t->best_pv_len, 0);
+        } else {
+            /* Analysis mode: one full-window search per line, excluding the
+             * moves already found for this depth. The lines are sorted by
+             * score before being reported, so multipv 1 is always the best. */
+            Move pvs[MAX_MULTIPV][MAX_PLY + 2];
+            int lens[MAX_MULTIPV], values[MAX_MULTIPV], order[MAX_MULTIPV];
+            int searched = 0;
+            score = SCORE_NONE;
+            for (int line = 0; line < n_lines; line++) {
+                int value = negamax(t, ss, -INFINITY_SCORE, INFINITY_SCORE, depth, false, true);
+                if (stopped() || t->pv_len[0] == 0) break;
+                int len = t->pv_len[0];
+                memcpy(pvs[searched], t->pv[0], (size_t)len * sizeof(Move));
+                lens[searched] = len;
+                values[searched] = value;
+                order[searched] = searched;
+                searched++;
+                t->root_skip[t->root_skip_count++] = t->pv[0][0];
+            }
+            t->root_skip_count = 0;
+            if (searched == 0) break;
+
+            for (int i = 1; i < searched; i++) {
+                int idx = order[i], j = i;
+                while (j > 0 && values[idx] > values[order[j - 1]]) {
+                    order[j] = order[j - 1];
+                    j--;
+                }
+                order[j] = idx;
+            }
+            int best_line = order[0];
+            memcpy(t->best_pv, pvs[best_line], (size_t)lens[best_line] * sizeof(Move));
+            t->best_pv_len = lens[best_line];
+            t->score = score = values[best_line];
+
+            /* Keep the completed lines available if the search is stopped. */
+            t->completed = depth;
+            average = average == SCORE_NONE ? score : (2 * score + average) / 3;
+            for (int i = 0; i < searched; i++)
+                report(t, depth, values[order[i]], BOUND_EXACT, pvs[order[i]],
+                       lens[order[i]], i + 1);
+            if (stopped()) break;
         }
-        if (stopped()) break;
-
-        t->completed = depth;
-        t->score = score;
-        average = average == SCORE_NONE ? score : (2 * score + average) / 3;
-
         if (t->id != 0) continue;
-        report(t, depth, score, BOUND_EXACT, t->best_pv, t->best_pv_len);
 
         Move best = t->best_pv_len ? t->best_pv[0] : NO_MOVE;
         /* A best move that beats every alternative by a wide margin needs less time. */
@@ -1375,6 +1451,8 @@ static ThreadData *select_best_thread(void) {
     return best;
 }
 
+static int legal_moves(Board *b, Move *out);
+
 static void reset_thread(ThreadData *t, const Board *root, const uint64_t *history, int history_len) {
     t->board = *root;
     t->board.ply = 0;
@@ -1397,6 +1475,17 @@ static void reset_thread(ThreadData *t, const Board *root, const uint64_t *histo
     if (n > 0) memcpy(t->keys, history + (history_len - n), (size_t)n * sizeof(uint64_t));
     t->key_root = n;
     t->keys[n] = root->hash;
+
+    Move legal[MAX_MOVES];
+    int n_legal = legal_moves(&t->board, legal);
+    t->root_move_count = 0;
+    for (int i = 0; i < n_legal; i++)
+        if (searchmoves_allows(&limits, legal[i]))
+            t->root_moves[t->root_move_count++] = legal[i];
+    if (t->root_move_count == 0)   /* no usable searchmoves: search all legal moves */
+        for (int i = 0; i < n_legal; i++)
+            t->root_moves[t->root_move_count++] = legal[i];
+    t->root_skip_count = 0;
 }
 
 static int legal_moves(Board *b, Move *out) {
@@ -1433,9 +1522,9 @@ void search_run(const Board *root, const uint64_t *history, int history_len,
     }
 
     /* Tablebase root: play the DTZ-optimal move under a real clock. */
-    if (time_managed && !lim->ponder && syzygy_available()) {
+    if (time_managed && !lim->ponder && syzygy_available() && multi_pv == 1) {
         Move tb = syzygy_probe_root(&rb);
-        if (tb != NO_MOVE) {
+        if (tb != NO_MOVE && searchmoves_allows(lim, tb)) {
             result->best = tb;
             if (search_verbose) {
                 printf("info depth 1 string syzygy root move\nbestmove %s\n", move_to_uci(&rb, tb));
@@ -1477,11 +1566,12 @@ void search_run(const Board *root, const uint64_t *history, int history_len,
         atomic_store(&stop_flag, true);
     }
 
-    ThreadData *best = select_best_thread();
+    ThreadData *best = multi_pv > 1 ? threads[0] : select_best_thread();
     if (best != threads[0] && best->best_pv_len)
-        report(best, best->completed, best->score, BOUND_EXACT, best->best_pv, best->best_pv_len);
+        report(best, best->completed, best->score, BOUND_EXACT, best->best_pv, best->best_pv_len, 0);
 
     Move bm = best->best_pv_len ? validated(&rb, best->best_pv[0]) : NO_MOVE;
+    if (bm == NO_MOVE && threads[0]->root_move_count > 0) bm = threads[0]->root_moves[0];
     if (bm == NO_MOVE) bm = legal[0];
     Move pm = NO_MOVE;
     {
@@ -1563,6 +1653,12 @@ void search_set_threads(int n) {
 }
 
 int search_get_threads(void) { return thread_count; }
+
+void search_set_multipv(int n) {
+    multi_pv = n < 1 ? 1 : n > MAX_MULTIPV ? MAX_MULTIPV : n;
+}
+
+int search_get_multipv(void) { return multi_pv; }
 
 void search_init(void) {
     for (int d = 0; d < 64; d++)

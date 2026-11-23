@@ -79,6 +79,7 @@
 /* Search limits */
 #define MAX_PLY        128   /* deepest search ply */
 #define MAX_MOVES      256
+#define MAX_MULTIPV    64    /* MultiPV analysis lines */
 #define INFINITY_SCORE 32767
 #define MATE_SCORE     32000
 #define MATE_BOUND     31000

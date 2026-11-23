@@ -75,6 +75,7 @@ The network is embedded into the binary at compile time (`EVALFILE`, default `ne
 | ------ | ------- | --------------- |
 | Hash | 256 | 1-65536 MB transposition table |
 | Threads | 1 | 1-1024 search threads |
+| MultiPV | 1 | 1-64 principal variations reported per depth |
 | Clear Hash | | Empties the transposition table |
 | Ponder | false | Allows pondering (`go ponder` / `ponderhit`) |
 | UCI_Chess960 | false | Chess960 castling notation |
@@ -85,7 +86,13 @@ The network is embedded into the binary at compile time (`EVALFILE`, default `ne
 | SyzygyProbeLimit | 6 | 0-7 pieces |
 | Syzygy50MoveRule | true | Treat cursed wins / blessed losses as draws |
 
-Supported `go` parameters: `wtime btime winc binc movestogo movetime depth nodes mate infinite ponder`.
+Supported `go` parameters: `wtime btime winc binc movestogo movetime depth nodes mate infinite ponder`
+and `searchmoves <move>...`, which restricts the root to the listed legal moves (if none of
+the listed moves are legal, all legal root moves are searched).
+
+For analysis, `MultiPV` reports up to that many principal variations per depth, labelled
+with `multipv` in the `info` lines and sorted by score; the count is capped by the number
+of available root moves. It combines with `searchmoves` and the usual `go` limits.
 
 ## Commands
 

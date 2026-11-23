@@ -184,6 +184,47 @@ static void test_voting(void) {
     search_set_threads(1);
 }
 
+static void test_searchmoves(void) {
+    Board b;
+    assert(parse_fen(&b, STARTPOS_FEN));
+    ThreadData *t = threads[0];
+    limits = (SearchLimits){0};
+    limits.searchmoves[0] = parse_move(&b, "e2e4");
+    limits.searchmoves[1] = parse_move(&b, "d2d4");
+    limits.searchmoves_count = 2;
+    reset_thread(t, &b, NULL, 0);
+    assert(t->root_move_count == 2);
+    assert(root_move_allowed(t, limits.searchmoves[0]));
+    assert(root_move_allowed(t, limits.searchmoves[1]));
+    assert(!root_move_allowed(t, parse_move(&b, "g1f3")));
+    t->root_skip[t->root_skip_count++] = limits.searchmoves[0];
+    assert(!root_move_allowed(t, limits.searchmoves[0]));
+    t->root_skip_count = 0;
+
+    limits.searchmoves[0] = parse_move(&b, "e2e5");   /* illegal move */
+    limits.searchmoves_count = 1;
+    reset_thread(t, &b, NULL, 0);
+    assert(t->root_move_count == 20);                 /* falls back to all legal */
+}
+
+static void test_multipv(void) {
+    Board b;
+    assert(parse_fen(&b, STARTPOS_FEN));
+    SearchLimits lim;
+    memset(&lim, 0, sizeof lim);
+    lim.depth = 8;
+    lim.searchmoves[0] = parse_move(&b, "g1f3");
+    lim.searchmoves[1] = parse_move(&b, "b1c3");
+    lim.searchmoves_count = 2;
+    search_set_multipv(4);
+    SearchResult res;
+    search_run(&b, NULL, 0, &lim, &res);
+    assert(res.depth == 8);
+    assert(res.best == lim.searchmoves[0] || res.best == lim.searchmoves[1]);
+    search_set_multipv(1);
+    assert(search_get_multipv() == 1);
+}
+
 static void check_tree(Board *b, int depth) {
     Board original = *b;
     MoveList all, evasions;
@@ -245,6 +286,8 @@ int main(void) {
     test_upcoming();
     test_see();
     test_voting();
+    test_searchmoves();
+    test_multipv();
     test_board();
     puts("Search, TT, SEE, evasion and perft regressions passed");
     return 0;

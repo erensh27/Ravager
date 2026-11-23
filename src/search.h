@@ -13,6 +13,8 @@ typedef struct {
     int      mate;              /* moves */
     bool     infinite;
     bool     ponder;
+    Move     searchmoves[MAX_MOVES];   /* empty list = all legal root moves */
+    int      searchmoves_count;
 } SearchLimits;
 
 typedef struct {
@@ -26,6 +28,8 @@ typedef struct {
 void search_init(void);
 void search_set_threads(int n);
 int  search_get_threads(void);
+void search_set_multipv(int n);       /* 1..MAX_MULTIPV principal variations */
+int  search_get_multipv(void);
 void search_clear(void);              /* forget all learned statistics */
 /* Runs a complete search; prints info/bestmove lines when search_verbose. */
 void search_run(const Board *root, const uint64_t *history, int history_len,
