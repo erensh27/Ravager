@@ -285,6 +285,37 @@ static void check_tree(Board *b, int depth) {
     }
 }
 
+static Bitboard slider_reference(int sq, Bitboard occ, int diagonal) {
+    Bitboard result = 0;
+    for (int dr = -1; dr <= 1; dr++)
+        for (int df = -1; df <= 1; df++) {
+            if ((!dr && !df) || ((dr != 0 && df != 0) != diagonal)) continue;
+            int r = sq / 8 + dr, f = sq % 8 + df;
+            while (r >= 0 && r < 8 && f >= 0 && f < 8) {
+                Bitboard bit = 1ULL << (r * 8 + f);
+                result |= bit;
+                if (occ & bit) break;
+                r += dr;
+                f += df;
+            }
+        }
+    return result;
+}
+
+static void test_sliders(void) {
+    for (int sq = 0; sq < 64; sq++)
+        for (int diagonal = 0; diagonal < 2; diagonal++) {
+            Bitboard edges = ((0xffULL | (0xffULL << 56)) & ~(0xffULL << (sq / 8 * 8))) |
+                             ((FILE_A | FILE_H) & ~(FILE_A << (sq % 8)));
+            Bitboard mask = slider_reference(sq, 0, diagonal) & ~edges, occ = 0;
+            do {
+                Bitboard expected = slider_reference(sq, occ, diagonal);
+                assert((diagonal ? bishop_attacks(sq, occ) : rook_attacks(sq, occ)) == expected);
+                occ = (occ - mask) & mask;
+            } while (occ);
+        }
+}
+
 static void test_board(void) {
     static const struct { const char *fen; int depth; uint64_t nodes; } cases[] = {
         {"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", 5, 4865609},
@@ -322,6 +353,7 @@ int main(void) {
     test_voting();
     test_searchmoves();
     test_multipv();
+    test_sliders();
     test_board();
     puts("Search, TT, SEE, evasion and perft regressions passed");
     return 0;
