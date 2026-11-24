@@ -67,8 +67,6 @@ typedef struct {
     _Alignas(64) int16_t thr[2][WIDTH];
     Bitboard attf[64];      /* attack set of the non-king piece on each square */
     Bitboard men, pawns;    /* non-king occupancy and pawn occupancy */
-    uint16_t pp[2][128];    /* pawn-pair feature ids per perspective */
-    uint8_t npp[2];
     uint8_t squares[64], view[2], bucket[2];
     int output[2];
     uint8_t output_mask;
@@ -86,7 +84,7 @@ static _Thread_local CacheEntry bucket_cache[2][32];
 static _Thread_local int base_ply;
 static _Thread_local int frame_source[FRAMES];
 static _Thread_local uint64_t cache_generation;
-static _Thread_local uint64_t seen_old[(AUX + 63) / 64], seen_new[(AUX + 63) / 64];
+static Bitboard pair_files[64];
 
 static uint16_t square_offset[12][64], piece_span[12];
 static uint32_t piece_base[12];
@@ -118,6 +116,11 @@ static int targets(int attacker, int victim) {
 static int target_count(int t) { return t == PAWN ? 4 : t == KING ? 0 : (t == BISHOP || t == ROOK) ? 8 : 10; }
 
 static void feature_tables(void) {
+    for (int s = 0; s < 64; s++) {
+        pair_files[s] = 0;
+        for (int f = 0; f < 8; f++)
+            if (abs(f - (s & 7)) <= 1) pair_files[s] |= 0x0101010101010101ULL << f;
+    }
     for (unsigned mask = 0; mask < 256; mask++) {
         int n = 0;
         for (unsigned bits = mask; bits; bits &= bits - 1)
@@ -158,12 +161,17 @@ static inline unsigned psqt_index(int bucket, int view, int piece, int sq, int p
 }
 
 /* Threat edges of the attackers in `attackers`, as feature ids for perspective p. */
-static int edge_list(const Frame *fr, Bitboard attackers, int p, uint32_t *out, int n) {
+static int edge_list(const Frame *fr, const Frame *other, Bitboard changed,
+                     Bitboard attackers, int p, uint32_t *out, int n) {
     int fl = fr->view[p];
     for (Bitboard left = attackers & fr->men; left; left &= left - 1) {
         int from = __builtin_ctzll(left), ap = fr->squares[from];
         int a = (ap / 6 ^ p) * 6 + ap % 6, ff = from ^ fl;
-        for (Bitboard t = fr->attf[from] & fr->men; t; t &= t - 1) {
+        Bitboard targets = fr->attf[from] & fr->men;
+        /* An unchanged attacker/target pair has the same feature in both frames. */
+        if (other && !(changed & (1ULL << from)))
+            targets &= ~(other->attf[from] & other->men & ~changed);
+        for (Bitboard t = targets; t; t &= t - 1) {
             int to = __builtin_ctzll(t), vp = fr->squares[to];
             int v = (vp / 6 ^ p) * 6 + vp % 6, tt = to ^ fl;
             int32_t kb = key_base[a][v];
@@ -176,22 +184,21 @@ static int edge_list(const Frame *fr, Bitboard attackers, int p, uint32_t *out, 
     return n;
 }
 
-static void pawn_pairs(const Board *b, Frame *f) {
-    int sqs[16], colors[16], n = 0;
-    Bitboard pawns = b->pieces[0][PAWN] | b->pieces[1][PAWN];
-    f->npp[0] = f->npp[1] = 0;
-    while (pawns) { int sq = lsb_pop(&pawns); sqs[n] = sq; colors[n++] = b->piece_on[sq] / 6; }
-    for (int i = 0; i < n; i++)
-        for (int j = i + 1; j < n; j++) {
-            if (abs((sqs[i] & 7) - (sqs[j] & 7)) > 1) continue;
-            for (int p = 0; p < 2; p++) {
-                int flip = f->view[p];
-                unsigned a = (unsigned)((sqs[i] ^ flip) - 8 + ((colors[i] ^ p) * 48));
-                unsigned v = (unsigned)((sqs[j] ^ flip) - 8 + ((colors[j] ^ p) * 48));
-                unsigned hi = a > v ? a : v, lo = a < v ? a : v;
-                f->pp[p][f->npp[p]++] = (uint16_t)(hi * (hi - 1) / 2 + lo);
-            }
+static int pawn_pairs(const Frame *f, Bitboard changed, int p, uint32_t *out, int n) {
+    Bitboard pawns = f->pawns;
+    for (Bitboard left = changed & pawns; left; left &= left - 1) {
+        int s = lsb(left), flip = f->view[p];
+        pawns &= ~(1ULL << s);  /* Pairs with two changed pawns are emitted once. */
+        unsigned a = (unsigned)((s ^ flip) - 8 + ((f->squares[s] / 6 ^ p) * 48));
+        for (Bitboard partners = pawns & pair_files[s]; partners; partners &= partners - 1) {
+            int to = lsb(partners);
+            unsigned v = (unsigned)((to ^ flip) - 8 + ((f->squares[to] / 6 ^ p) * 48));
+            unsigned hi = a > v ? a : v, lo = a < v ? a : v;
+            assert(n < CAP);
+            out[n++] = hi * (hi - 1) / 2 + lo;
         }
+    }
+    return n;
 }
 
 /* ---- accumulator row kernels: dst = src + sum(adds) - sum(subs) ---- */
@@ -217,6 +224,29 @@ static inline void prefetch_rows(const char *base, size_t rowbytes, const RowOps
 
 __attribute__((target("avx2")))
 static void psqt_rows_avx2(int16_t *dst, const int16_t *src, const RowOps *o) {
+    /* Ordinary moves and captures need only one added row. */
+    if (o->nadd == 1 && (o->nsub == 1 || o->nsub == 2)) {
+        const int16_t *add = pw + (size_t)o->add[0] * WIDTH;
+        const int16_t *sub = pw + (size_t)o->sub[0] * WIDTH;
+        if (o->nsub == 1) {
+            for (int j = 0; j < WIDTH; j += 16) {
+                __m256i v = _mm256_sub_epi16(_mm256_load_si256((const void *)(src + j)),
+                                            _mm256_load_si256((const void *)(sub + j)));
+                v = _mm256_add_epi16(v, _mm256_load_si256((const void *)(add + j)));
+                _mm256_store_si256((void *)(dst + j), v);
+            }
+        } else {
+            const int16_t *cap = pw + (size_t)o->sub[1] * WIDTH;
+            for (int j = 0; j < WIDTH; j += 16) {
+                __m256i v = _mm256_sub_epi16(_mm256_load_si256((const void *)(src + j)),
+                                            _mm256_load_si256((const void *)(sub + j)));
+                v = _mm256_add_epi16(v, _mm256_load_si256((const void *)(add + j)));
+                v = _mm256_sub_epi16(v, _mm256_load_si256((const void *)(cap + j)));
+                _mm256_store_si256((void *)(dst + j), v);
+            }
+        }
+        return;
+    }
     prefetch_rows((const char *)pw, WIDTH * 2, o, 0, 256);
     for (int tile = 0; tile < WIDTH; tile += 128) {
         if (tile + 128 < WIDTH) prefetch_rows((const char *)pw, WIDTH * 2, o, (size_t)(tile + 128) * 2, 256);
@@ -236,6 +266,10 @@ static void psqt_rows_avx2(int16_t *dst, const int16_t *src, const RowOps *o) {
 
 __attribute__((target("avx2")))
 static void aux_rows_avx2(int16_t *dst, const int16_t *src, const RowOps *o) {
+    if (!o->nadd && !o->nsub) {
+        if (dst != src) memcpy(dst, src, WIDTH * sizeof(int16_t));
+        return;
+    }
     prefetch_rows((const char *)aw, WIDTH, o, 0, 128);
     for (int tile = 0; tile < WIDTH; tile += 128) {
         if (tile + 128 < WIDTH) prefetch_rows((const char *)aw, WIDTH, o, (size_t)tile + 128, 128);
@@ -257,6 +291,26 @@ static void aux_rows_avx2(int16_t *dst, const int16_t *src, const RowOps *o) {
 
 __attribute__((target("avx512f,avx512bw")))
 static void psqt_rows_avx512(int16_t *dst, const int16_t *src, const RowOps *o) {
+    if (o->nadd == 1 && (o->nsub == 1 || o->nsub == 2)) {
+        const int16_t *add = pw + (size_t)o->add[0] * WIDTH;
+        const int16_t *sub = pw + (size_t)o->sub[0] * WIDTH;
+        if (o->nsub == 1) {
+            for (int j = 0; j < WIDTH; j += 32) {
+                __m512i v = _mm512_sub_epi16(_mm512_load_si512(src + j), _mm512_load_si512(sub + j));
+                v = _mm512_add_epi16(v, _mm512_load_si512(add + j));
+                _mm512_store_si512(dst + j, v);
+            }
+        } else {
+            const int16_t *cap = pw + (size_t)o->sub[1] * WIDTH;
+            for (int j = 0; j < WIDTH; j += 32) {
+                __m512i v = _mm512_sub_epi16(_mm512_load_si512(src + j), _mm512_load_si512(sub + j));
+                v = _mm512_add_epi16(v, _mm512_load_si512(add + j));
+                v = _mm512_sub_epi16(v, _mm512_load_si512(cap + j));
+                _mm512_store_si512(dst + j, v);
+            }
+        }
+        return;
+    }
     prefetch_rows((const char *)pw, WIDTH * 2, o, 0, 512);
     for (int tile = 0; tile < WIDTH; tile += 256) {
         if (tile + 256 < WIDTH) prefetch_rows((const char *)pw, WIDTH * 2, o, (size_t)(tile + 256) * 2, 512);
@@ -276,6 +330,10 @@ static void psqt_rows_avx512(int16_t *dst, const int16_t *src, const RowOps *o) 
 
 __attribute__((target("avx512f,avx512bw")))
 static void aux_rows_avx512(int16_t *dst, const int16_t *src, const RowOps *o) {
+    if (!o->nadd && !o->nsub) {
+        if (dst != src) memcpy(dst, src, WIDTH * sizeof(int16_t));
+        return;
+    }
     prefetch_rows((const char *)aw, WIDTH, o, 0, 512);
     for (int tile = 0; tile < WIDTH; tile += 512) {
         if (tile + 512 < WIDTH) prefetch_rows((const char *)aw, WIDTH, o, (size_t)tile + 512, 512);
@@ -336,8 +394,8 @@ static void psqt_cached(Frame *f, int p) {
 
 static void threats_scratch(Frame *f, int p) {
     uint32_t add[CAP];
-    int n = edge_list(f, f->men, p, add, 0);
-    for (int i = 0; i < f->npp[p]; i++) { assert(n < CAP); add[n++] = f->pp[p][i]; }
+    int n = edge_list(f, NULL, 0, f->men, p, add, 0);
+    n = pawn_pairs(f, f->pawns, p, add, n);
     RowOps ops = {add, NULL, n, 0};
     aux_rows(f->thr[p], zero_acc, &ops);
 }
@@ -354,7 +412,6 @@ static void build_frame(Frame *f, const Board *b, const Frame *old, bool use_cac
 
     uint64_t changed = 0;
     Bitboard affected = 0;
-    bool pawns_changed = true;
     if (old) {
         changed = square_diff(old->squares, b->piece_on);
         /* Affected attackers: pieces on changed squares, plus pieces whose old attack set touched a
@@ -369,19 +426,12 @@ static void build_frame(Frame *f, const Board *b, const Frame *old, bool use_cac
             int s = __builtin_ctzll(l), ap = b->piece_on[s];
             f->attf[s] = (ap == EMPTY_SQUARE || ap % 6 == KING) ? 0 : attacks(ap, s, b->occ_all);
         }
-        pawns_changed = ((old->pawns | f->pawns) & changed) != 0;
     } else {
         memset(f->attf, 0, sizeof f->attf);
         for (Bitboard l = f->men; l; l &= l - 1) {
             int s = __builtin_ctzll(l);
             f->attf[s] = attacks(b->piece_on[s], s, b->occ_all);
         }
-    }
-    if (old && !pawns_changed && old->view[0] == f->view[0] && old->view[1] == f->view[1]) {
-        memcpy(f->pp, old->pp, sizeof f->pp);
-        memcpy(f->npp, old->npp, sizeof f->npp);
-    } else {
-        pawn_pairs(b, f);
     }
 
     for (int p = 0; p < 2; p++) {
@@ -404,23 +454,11 @@ static void build_frame(Frame *f, const Board *b, const Frame *old, bool use_cac
 
         /* Threat part: only edges of affected attackers (and the pawn pairs, if a pawn moved) differ. */
         if (old && old->view[p] == f->view[p]) {
-            uint32_t olde[CAP], newe[CAP], add[CAP], sub[CAP];
-            int no = edge_list(old, affected, p, olde, 0), nn = edge_list(f, affected, p, newe, 0);
-            int na = 0, ns = 0;
-            if (pawns_changed) {
-                for (int i = 0; i < old->npp[p]; i++) olde[no++] = old->pp[p][i];
-                for (int i = 0; i < f->npp[p]; i++) newe[nn++] = f->pp[p][i];
-            }
-            /* Set difference through two bitsets, cleared again afterwards. */
-            for (int i = 0; i < no; i++) { uint32_t id = olde[i]; seen_old[id >> 6] |= 1ULL << (id & 63); }
-            for (int i = 0; i < nn; i++) {
-                uint32_t id = newe[i];
-                seen_new[id >> 6] |= 1ULL << (id & 63);
-                if (!(seen_old[id >> 6] >> (id & 63) & 1)) add[na++] = id;
-            }
-            for (int i = 0; i < no; i++) { uint32_t id = olde[i]; if (!(seen_new[id >> 6] >> (id & 63) & 1)) sub[ns++] = id; }
-            for (int i = 0; i < no; i++) seen_old[olde[i] >> 6] = 0;
-            for (int i = 0; i < nn; i++) seen_new[newe[i] >> 6] = 0;
+            uint32_t add[CAP], sub[CAP];
+            int na = edge_list(f, old, changed, affected, p, add, 0);
+            int ns = edge_list(old, f, changed, affected, p, sub, 0);
+            na = pawn_pairs(f, changed, p, add, na);
+            ns = pawn_pairs(old, changed, p, sub, ns);
             RowOps ops = {add, sub, na, ns};
             aux_rows(f->thr[p], old->thr[p], &ops);
         } else {
@@ -593,6 +631,30 @@ static int forward_avx2(const Frame *f, const Board *b) {
     return finish_avx2(sums, bucket);
 }
 
+/* 256-bit dot products also serve CPUs without 512-bit vector support. */
+__attribute__((target("avx2,avxvnni,fma")))
+static int forward_avxvnni(const Frame *f, const Board *b) {
+    _Alignas(32) uint8_t x[WIDTH];
+    activate_avx2(f, b, x);
+    int bucket = output_bucket(b);
+    uint16_t idx[256];
+    int ng = nonzero_groups(x, idx);
+    __m256i s[4];
+    for (int j = 0; j < 4; j++) s[j] = _mm256_setzero_si256();
+    for (int gi = 0; gi < ng; gi++) {
+        int g = idx[gi];
+        uint32_t bits;
+        memcpy(&bits, x + g * 4, sizeof bits);
+        __m256i in = _mm256_set1_epi32((int)bits);
+        for (int j = 0; j < 4; j++)
+            s[j] = _mm256_dpbusd_avx_epi32(s[j], in,
+                _mm256_load_si256((const void *)(w1[bucket] + g * 128 + j * 32)));
+    }
+    _Alignas(64) int32_t sums[32];
+    for (int j = 0; j < 4; j++) _mm256_store_si256((void *)(sums + j * 8), s[j]);
+    return finish_avx2(sums, bucket);
+}
+
 __attribute__((target("avx512f,avx512bw,avx512vnni,avx2,fma")))
 static int forward_vnni(const Frame *f, const Board *b) {
     _Alignas(32) uint8_t x[WIDTH];
@@ -687,6 +749,10 @@ bool net_load(const unsigned char *bytes, size_t count) {
         aux_rows = aux_rows_avx2;
         forward = forward_avx2;
         net_tier = "avx2";
+        if (__builtin_cpu_supports("avxvnni")) {
+            forward = forward_avxvnni;
+            net_tier = "avx-vnni";
+        }
     }
     if (__builtin_cpu_supports("avx512f") && __builtin_cpu_supports("avx512bw")) {
         psqt_rows = psqt_rows_avx512;
@@ -728,9 +794,18 @@ void net_push_null(const Board *b) {
     }
 }
 
-int net_eval(const Board *b, bool fresh) {
+/* Keep the large verification frame off the ordinary evaluation stack. */
+__attribute__((noinline))
+static int eval_fresh(const Board *b) {
     Frame scratch;
-    Frame *f = sync_frame(b, &scratch, fresh);
+    build_frame(&scratch, b, NULL, false);
+    return forward(&scratch, b);
+}
+
+int net_eval(const Board *b, bool fresh) {
+    int idx = b->ply - base_ply;
+    if (fresh || idx < 0 || idx >= FRAMES) return eval_fresh(b);
+    Frame *f = sync_frame(b, NULL, false);
     if (!(f->output_mask & (1 << b->side))) {
         f->output[b->side] = forward(f, b);
         f->output_mask |= 1 << b->side;

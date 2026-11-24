@@ -18,8 +18,10 @@ Bitboard adjacent_files[8];
 #if defined(__BMI2__) && (defined(__x86_64__) || defined(__i386__))
 #include <immintrin.h>
 #define USE_PEXT 1
-static Bitboard rook_attack_table[64][4096];
-static Bitboard bishop_attack_table[64][512];
+/* Pack each square's actual occupancy range instead of reserving the largest
+ * range 64 times. This leaves more cache space for evaluation and histories. */
+static Bitboard rook_attack_data[102400], bishop_attack_data[5248];
+static Bitboard *rook_attack_table[64], *bishop_attack_table[64];
 static Bitboard rook_masks[64], bishop_masks[64];
 #endif
 
@@ -152,9 +154,14 @@ void init_bitboards(void) {
      * which calls rook_attacks()/bishop_attacks(). */
     {
         Bitboard subsets[4096];
+        size_t rook_offset = 0, bishop_offset = 0;
         for (int sq = 0; sq < 64; sq++) {
             rook_masks[sq]   = compute_rook_mask(sq);
             bishop_masks[sq] = compute_bishop_mask(sq);
+            rook_attack_table[sq] = rook_attack_data + rook_offset;
+            bishop_attack_table[sq] = bishop_attack_data + bishop_offset;
+            rook_offset += (size_t)1 << popcount(rook_masks[sq]);
+            bishop_offset += (size_t)1 << popcount(bishop_masks[sq]);
 
             int count = 0;
             Bitboard sub = 0;

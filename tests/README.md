@@ -1,8 +1,8 @@
 Run `make test` from the repository root. These deterministic checks do not play games or run strength tests.
 
-- Search: evasion coverage, late captures, promotions, repetition boundaries, mate precedence, quiescence bounds, decisive-score normalization, pinned exchanges, thread voting, `searchmoves` root filtering and MultiPV analysis runs.
-- Board: reference perft counts, evasion-generator agreement and make/unmake restoration, including all 960 starting arrangements.
-- NNUE: incremental versus fresh accumulators, scalar versus available SIMD heads, every sparse-index mask, lazy/null paths, castling, en passant, promotions, repeated roots and cache invalidation after reload. Reload testing changes only a temporary in-memory network copy.
+- Search: evasion coverage, late captures, promotions, repetition boundaries, mate precedence, quiescence bounds, decisive-score normalization, pinned exchanges, thread voting, continuation-history context isolation, `searchmoves` root filtering and MultiPV analysis runs.
+- Board: exhaustive sliding-attack occupancy comparisons, reference perft counts, evasion-generator agreement and make/unmake restoration, including all 960 starting arrangements.
+- NNUE: incremental versus fresh accumulators, scalar versus available SIMD heads (including 256-bit VNNI), accumulator wrapping and in-place row updates, pawn-pair feature selection, every sparse-index mask, lazy/null paths, castling, en passant, promotions, repeated roots and cache invalidation after reload. Reload testing changes only a temporary in-memory network copy.
 - Tablebase adapter: en-passant arguments for both colours and absent en passant, without tablebase files.
 
 The tests include internal implementation files to exercise search and inference invariants without adding a test API to the engine. Assertions remain enabled in the test translation units.

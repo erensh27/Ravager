@@ -73,6 +73,39 @@ static void test_picker(void) {
     assert(promotions == 4);
 }
 
+static void test_history_context(void) {
+    const struct { const char *fen, *move; bool check, tactical; } cases[] = {
+        {STARTPOS_FEN, "e2e4", false, false},
+        {"7k/8/8/4p3/3P4/8/8/6K1 w - - 0 1", "d4e5", false, true},
+        {"4r2k/8/8/8/8/8/3B4/4K3 w - - 0 1", "d2e3", true, false},
+        {"7k/8/8/8/8/4n3/3B4/5K2 w - - 0 1", "d2e3", true, true},
+    };
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        ThreadData *t = position(cases[i].fen);
+        Stack *ss = &t->stack[STACK_OFFSET];
+        Move m = parse_move(&t->board, cases[i].move);
+        assert(m != NO_MOVE && move_is_legal(&t->board, m));
+        assert((t->board.checkers != 0) == cases[i].check);
+        int piece = t->board.piece_on[move_from(m)], to = move_to(m);
+        ss->reduction = 8192;
+        do_move(t, ss, m, cases[i].tactical);
+        assert(ss->reduction == 0);
+        update_cont(ss + 1, BLACK * 6 + KING, H8, 4, true);
+        assert(t->cont[cases[i].check][cases[i].tactical][piece][to][BLACK * 6 + KING][H8] > 0);
+        for (int c = 0; c < 2; c++)
+            for (int cap = 0; cap < 2; cap++)
+                if (c != cases[i].check || cap != cases[i].tactical)
+                    assert(t->cont[c][cap][piece][to][BLACK * 6 + KING][H8] == 0);
+        undo_move(t, m);
+    }
+
+    ThreadData *t = position(STARTPOS_FEN);
+    Stack *ss = &t->stack[STACK_OFFSET];
+    ss->ply = 6;
+    assert(qsearch(t, ss, mate_in(6), MATE_SCORE, false) == mate_in(6));
+    assert(atomic_load(&t->nodes) == 0);
+}
+
 static void test_draws(void) {
     ThreadData *t = position(STARTPOS_FEN);
     Stack *ss = &t->stack[STACK_OFFSET];
@@ -252,6 +285,37 @@ static void check_tree(Board *b, int depth) {
     }
 }
 
+static Bitboard slider_reference(int sq, Bitboard occ, int diagonal) {
+    Bitboard result = 0;
+    for (int dr = -1; dr <= 1; dr++)
+        for (int df = -1; df <= 1; df++) {
+            if ((!dr && !df) || ((dr != 0 && df != 0) != diagonal)) continue;
+            int r = sq / 8 + dr, f = sq % 8 + df;
+            while (r >= 0 && r < 8 && f >= 0 && f < 8) {
+                Bitboard bit = 1ULL << (r * 8 + f);
+                result |= bit;
+                if (occ & bit) break;
+                r += dr;
+                f += df;
+            }
+        }
+    return result;
+}
+
+static void test_sliders(void) {
+    for (int sq = 0; sq < 64; sq++)
+        for (int diagonal = 0; diagonal < 2; diagonal++) {
+            Bitboard edges = ((0xffULL | (0xffULL << 56)) & ~(0xffULL << (sq / 8 * 8))) |
+                             ((FILE_A | FILE_H) & ~(FILE_A << (sq % 8)));
+            Bitboard mask = slider_reference(sq, 0, diagonal) & ~edges, occ = 0;
+            do {
+                Bitboard expected = slider_reference(sq, occ, diagonal);
+                assert((diagonal ? bishop_attacks(sq, occ) : rook_attacks(sq, occ)) == expected);
+                occ = (occ - mask) & mask;
+            } while (occ);
+        }
+}
+
 static void test_board(void) {
     static const struct { const char *fen; int depth; uint64_t nodes; } cases[] = {
         {"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", 5, 4865609},
@@ -280,6 +344,7 @@ int main(void) {
     tt_alloc(16);
     search_verbose = 0;
     test_picker();
+    test_history_context();
     test_draws();
     test_tt();
     test_qsearch();
@@ -288,6 +353,7 @@ int main(void) {
     test_voting();
     test_searchmoves();
     test_multipv();
+    test_sliders();
     test_board();
     puts("Search, TT, SEE, evasion and perft regressions passed");
     return 0;
