@@ -36,6 +36,13 @@
     #include <stdatomic.h>
 #endif
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 #include "tbprobe.h"
 
 #define TB_PIECES    (7)
@@ -61,10 +68,6 @@
 #define FD_ERR -1
 typedef size_t map_t;
 #else
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
 #define SEP_CHAR ';'
 #define FD HANDLE
 #define FD_ERR INVALID_HANDLE_VALUE

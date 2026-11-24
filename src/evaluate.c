@@ -534,9 +534,9 @@ int evaluate(Board *b) {
     int score = (mg * phase + eg * (TOTAL_PHASE - phase)) / TOTAL_PHASE;
 
     /* Tempo: from the point of view of the side to move */
+    score = (b->side == WHITE) ? score : -score;
     score += TEMPO[MG] * phase / TOTAL_PHASE + TEMPO[EG] * (TOTAL_PHASE - phase) / TOTAL_PHASE;
-
-    return (b->side == WHITE) ? score : -score;
+    return score;
 }
 
 bool is_insufficient_material(const Board *b) {

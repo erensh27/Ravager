@@ -149,8 +149,10 @@ static atomic_bool stop_flag = false;
 static atomic_bool pondering = false;
 static pthread_mutex_t wake_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t  wake_cond = PTHREAD_COND_INITIALIZER;
+static bool ponderhit_pending;
 static SearchLimits limits;
 static struct timespec start_ts;
+static atomic_int_fast64_t ponder_time_ms;
 static bool  time_managed;            /* clock-based ("dynamic") limits */
 static double opt_time, hard_time, max_time, base_opt, base_hard;
 static int   tm_stability, tm_failed_low;
@@ -162,6 +164,10 @@ static int64_t elapsed_ms(void) {
     clock_gettime(CLOCK_MONOTONIC, &now);
     return (int64_t)(now.tv_sec - start_ts.tv_sec) * 1000 +
            (now.tv_nsec - start_ts.tv_nsec) / 1000000;
+}
+
+static int64_t time_used_ms(void) {
+    return elapsed_ms() - atomic_load_explicit(&ponder_time_ms, memory_order_relaxed);
 }
 
 static uint64_t total_nodes(void) {
@@ -237,7 +243,7 @@ static inline bool should_stop(ThreadData *t) {
         atomic_store(&stop_flag, true);
         return true;
     }
-    if (!atomic_load_explicit(&pondering, memory_order_relaxed) && elapsed_ms() >= hard_time) {
+    if (!atomic_load_explicit(&pondering, memory_order_relaxed) && time_used_ms() >= hard_time) {
         atomic_store(&stop_flag, true);
         return true;
     }
@@ -540,6 +546,10 @@ static void score_noisy(const ThreadData *t, const Stack *ss, MoveList *ml, int 
     }
 }
 
+static inline bool possible_quiet_check(const Bitboard direct[6], Bitboard rays, Move m, int pt) {
+    return ((direct[pt] >> move_to(m)) & 1) || ((rays >> move_from(m)) & 1) || move_is_castle(m);
+}
+
 static void score_quiets(const ThreadData *t, const Stack *ss, MoveList *ml, int start) {
     const Board *b = &t->board;
     int us = b->side, them = us ^ 1;
@@ -549,6 +559,15 @@ static void score_quiets(const ThreadData *t, const Stack *ss, MoveList *ml, int
     Bitboard their_rooks = b->pieces[them][ROOK];
     Bitboard their_minors = b->pieces[them][KNIGHT] | b->pieces[them][BISHOP];
     Bitboard their_pawns = b->pieces[them][PAWN], our_pawns = b->pieces[us][PAWN];
+    /* A quiet check must either land on a checking square or uncover a ray. */
+    int king_sq = lsb(their_king);
+    Bitboard rook_checks = rook_attacks(king_sq, b->occ_all);
+    Bitboard bishop_checks = bishop_attacks(king_sq, b->occ_all);
+    Bitboard rays = rook_attacks(king_sq, 0) | bishop_attacks(king_sq, 0);
+    Bitboard direct[6] = {
+        pawn_attack_table[them][king_sq], knight_attack_table[king_sq],
+        bishop_checks, rook_checks, bishop_checks | rook_checks, king_attack_table[king_sq]
+    };
     for (int i = start; i < ml->count; i++) {
         Move m = ml->moves[i];
         int from = move_from(m), to = move_to(m), piece = b->piece_on[from], pt = piece % 6;
@@ -556,7 +575,8 @@ static void score_quiets(const ThreadData *t, const Stack *ss, MoveList *ml, int
         if (c1) s += (*c1)[piece][to];
         if (c2) s += (*c2)[piece][to];
         s += (*ph)[piece][to];
-        if (move_gives_check(b, m) && see_ge(b, m, -QUIET_CHECK_SEE)) s += 10000;
+        if (possible_quiet_check(direct, rays, m, pt) &&
+            move_gives_check(b, m) && see_ge(b, m, -QUIET_CHECK_SEE)) s += 10000;
         switch (pt) {
             case PAWN:
                 if (pawn_attack_table[them][to] & our_pawns) {   /* the pawn is defended there */
@@ -1399,7 +1419,7 @@ static void iterative_deepening(ThreadData *t) {
         if (time_managed && depth > 10 && abs(score) >= MATE_BOUND) {
             if (++mate_hits >= 3) break;
         } else mate_hits = 0;
-        if (!atomic_load(&pondering) && elapsed_ms() >= opt_time) break;
+        if (!atomic_load(&pondering) && time_used_ms() >= opt_time) break;
     }
 }
 
@@ -1408,6 +1428,25 @@ static void *thread_main(void *arg) {
     nnue_prepare_search(&t->board);   /* network state is thread-local */
     iterative_deepening(t);
     return NULL;
+}
+
+static void finish_first_iteration(ThreadData *t) {
+    SearchLimits saved_limits = limits;
+    double saved_hard_time = hard_time;
+    limits.nodes = 0;
+    hard_time = 1e18;
+    atomic_store(&stop_flag, false);
+    int score = negamax(t, &t->stack[STACK_OFFSET], -INFINITY_SCORE, INFINITY_SCORE, 1, false, true);
+    if (!stopped() && t->pv_len[0] > 0) {
+        memcpy(t->best_pv, t->pv[0], (size_t)t->pv_len[0] * sizeof(Move));
+        t->best_pv_len = t->pv_len[0];
+        t->completed = 1;
+        t->score = score;
+        report(t, 1, score, BOUND_EXACT, t->best_pv, t->best_pv_len, 0);
+    }
+    atomic_store(&stop_flag, true);
+    hard_time = saved_hard_time;
+    limits = saved_limits;
 }
 
 /* Thread voting: weight each thread's move by depth and relative score. */
@@ -1499,9 +1538,13 @@ static int legal_moves(Board *b, Move *out) {
 
 void search_run(const Board *root, const uint64_t *history, int history_len,
                 const SearchLimits *lim, SearchResult *result) {
+    pthread_mutex_lock(&wake_mutex);
     clock_gettime(CLOCK_MONOTONIC, &start_ts);
+    atomic_store(&ponder_time_ms, 0);
     limits = *lim;
-    atomic_store(&pondering, lim->ponder);
+    atomic_store(&pondering, lim->ponder && !ponderhit_pending);
+    ponderhit_pending = false;
+    pthread_mutex_unlock(&wake_mutex);
     memset(result, 0, sizeof *result);
     if (!threads) search_set_threads(1);
 
@@ -1555,16 +1598,7 @@ void search_run(const Board *root, const uint64_t *history, int history_len,
     for (int i = 1; i < launched; i++) pthread_join(handles[i], NULL);
 
     /* Stopped before the first iteration finished: still answer with a searched move. */
-    if (!threads[0]->best_pv_len) {
-        ThreadData *t = threads[0];
-        atomic_store(&stop_flag, false);
-        negamax(t, &t->stack[STACK_OFFSET], -INFINITY_SCORE, INFINITY_SCORE, 1, false, true);
-        if (t->pv_len[0] > 0) {
-            t->best_pv[0] = t->pv[0][0];
-            t->best_pv_len = 1;
-        }
-        atomic_store(&stop_flag, true);
-    }
+    if (!threads[0]->best_pv_len) finish_first_iteration(threads[0]);
 
     ThreadData *best = multi_pv > 1 ? threads[0] : select_best_thread();
     if (best != threads[0] && best->best_pv_len)
@@ -1606,6 +1640,8 @@ void search_stop(void) {
 
 void search_ponderhit(void) {
     pthread_mutex_lock(&wake_mutex);
+    if (atomic_load(&pondering)) atomic_store(&ponder_time_ms, elapsed_ms());
+    else ponderhit_pending = true;
     atomic_store(&pondering, false);
     pthread_cond_broadcast(&wake_cond);
     pthread_mutex_unlock(&wake_mutex);

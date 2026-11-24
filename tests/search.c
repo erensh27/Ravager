@@ -1,6 +1,7 @@
 /* Deterministic search, move-selection and board regressions; no match play. */
 #include "../src/search.c"
 #include "bench.h"
+#include "params.h"
 #include <assert.h>
 #include <stddef.h>
 
@@ -225,6 +226,53 @@ static void test_multipv(void) {
     assert(search_get_multipv() == 1);
 }
 
+static void test_time_limits(void) {
+    ThreadData *t = position(STARTPOS_FEN);
+    limits = (SearchLimits){0};
+    limits.time[WHITE] = 1000;
+    setup_time(&t->board);
+    hard_time = 500;
+    clock_gettime(CLOCK_MONOTONIC, &start_ts);
+    start_ts.tv_sec--;
+    atomic_store(&ponder_time_ms, 0);
+    atomic_store(&pondering, true);
+    assert(elapsed_ms() >= 1000);
+    search_ponderhit();
+    assert(time_used_ms() < 500);
+    assert(!should_stop(t));
+
+    t = position(STARTPOS_FEN);
+    limits = (SearchLimits){.movetime = 1};
+    setup_time(&t->board);
+    clock_gettime(CLOCK_MONOTONIC, &start_ts);
+    start_ts.tv_sec--;
+    atomic_store(&ponder_time_ms, 0);
+    atomic_store(&stop_flag, true);
+    finish_first_iteration(t);
+    assert(t->completed == 1 && t->best_pv_len > 0);
+    assert(t->score > -INFINITY_SCORE);
+    assert(move_is_pseudo_legal(&t->board, t->best_pv[0]));
+    assert(move_is_legal(&t->board, t->best_pv[0]));
+    assert(stopped());
+    assert(hard_time == 1);
+    atomic_store(&stop_flag, false);
+}
+
+static void test_eval_tempo(void) {
+    Board white, black;
+    assert(parse_fen(&white, STARTPOS_FEN));
+    assert(parse_fen(&black, "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1"));
+    int mg = TEMPO[MG], eg = TEMPO[EG];
+    TEMPO[MG] = TEMPO[EG] = 0;
+    int base_white = evaluate(&white), base_black = evaluate(&black);
+    assert(base_white == -base_black);
+    TEMPO[MG] = TEMPO[EG] = 10;
+    assert(evaluate(&white) == base_white + 10);
+    assert(evaluate(&black) == base_black + 10);
+    TEMPO[MG] = mg;
+    TEMPO[EG] = eg;
+}
+
 static void check_tree(Board *b, int depth) {
     Board original = *b;
     MoveList all, evasions;
@@ -242,8 +290,18 @@ static void check_tree(Board *b, int depth) {
         assert(legal == evasions.count);
     }
     if (!depth) return;
+    int king_sq = lsb(b->pieces[b->side ^ 1][KING]);
+    Bitboard rook_checks = rook_attacks(king_sq, b->occ_all);
+    Bitboard bishop_checks = bishop_attacks(king_sq, b->occ_all);
+    Bitboard rays = rook_attacks(king_sq, 0) | bishop_attacks(king_sq, 0);
+    Bitboard direct[6] = {
+        pawn_attack_table[b->side ^ 1][king_sq], knight_attack_table[king_sq],
+        bishop_checks, rook_checks, bishop_checks | rook_checks, king_attack_table[king_sq]
+    };
     for (int i = 0; i < all.count; i++) {
         Move m = all.moves[i];
+        if (!move_is_noisy(b, m) && move_gives_check(b, m))
+            assert(possible_quiet_check(direct, rays, m, b->piece_on[move_from(m)] % 6));
         if (!move_is_legal(b, m)) continue;
         make_move(b, m);
         check_tree(b, depth - 1);
@@ -288,6 +346,8 @@ int main(void) {
     test_voting();
     test_searchmoves();
     test_multipv();
+    test_time_limits();
+    test_eval_tempo();
     test_board();
     puts("Search, TT, SEE, evasion and perft regressions passed");
     return 0;

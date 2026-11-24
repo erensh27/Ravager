@@ -378,8 +378,9 @@ static void build_frame(Frame *f, const Board *b, const Frame *old, bool use_cac
         }
     }
     if (old && !pawns_changed && old->view[0] == f->view[0] && old->view[1] == f->view[1]) {
-        memcpy(f->pp, old->pp, sizeof f->pp);
         memcpy(f->npp, old->npp, sizeof f->npp);
+        for (int p = 0; p < 2; p++)
+            memcpy(f->pp[p], old->pp[p], (size_t)f->npp[p] * sizeof f->pp[p][0]);
     } else {
         pawn_pairs(b, f);
     }
