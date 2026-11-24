@@ -84,6 +84,7 @@ static const HistConf H_TACT  = {104, 328, 1248, 29, 394, 1122};
 #define WINNING_BONUS   10000000
 #define MIN_WINNING     (WINNING_BONUS - MAX_HISTORY * 4)
 #define STACK_OFFSET    6
+#define LOW_PLY         4
 
 /* ------------------------------------------------------------------ */
 /* Per-thread state. */
@@ -128,7 +129,8 @@ typedef struct {
     int16_t  from_to[2][2][2][64][64];   /* [side][from threatened][to threatened] */
     int16_t  piece_to[2][2][12][64];
     int16_t  tactical[2][6][12][64];     /* [to threatened][captured][piece][to] */
-    PieceTo  cont[12][64];
+    PieceTo  cont[2][2][12][64];        /* [in check][tactical][piece][to] */
+    int16_t  low_ply[LOW_PLY][64][64];
     PieceTo  pawn_hist[PAWN_HIST_SIZE];
     int16_t  corr_pawn[CORR_SIZE][2];
     int16_t  corr_nonpawn[2][CORR_SIZE][2];
@@ -380,6 +382,10 @@ static void update_quiet_single(ThreadData *t, Stack *ss, Move m, int depth, boo
     const Board *b = &t->board;
     int from = move_from(m), to = move_to(m), piece = b->piece_on[from];
     update_main(t, ss->threats, b->side, from, to, piece, hist_delta(&H_MAIN, depth, good));
+    if (ss->ply < LOW_PLY) {
+        int16_t *lp = &t->low_ply[ss->ply][from][to];
+        gravity(lp, *lp, hist_delta(&H_MAIN, depth, good) / 2, MAX_HISTORY);
+    }
     update_cont(ss, piece, to, depth, good);
     int16_t *ph = &t->pawn_hist[pawn_index(b)][piece][to];
     gravity(ph, *ph, hist_delta(&H_PAWN, depth, good), MAX_HISTORY);
@@ -553,6 +559,7 @@ static void score_quiets(const ThreadData *t, const Stack *ss, MoveList *ml, int
         Move m = ml->moves[i];
         int from = move_from(m), to = move_to(m), piece = b->piece_on[from], pt = piece % 6;
         int s = main_history(t, ss, us, from, to, piece);
+        if (ss->ply < LOW_PLY) s += t->low_ply[ss->ply][from][to];
         if (c1) s += (*c1)[piece][to];
         if (c2) s += (*c2)[piece][to];
         s += (*ph)[piece][to];
@@ -687,7 +694,8 @@ static inline void do_move(ThreadData *t, Stack *ss, Move m, bool tactical) {
     ss->piece = piece;
     ss->to = move_to(m);
     ss->tactical = tactical;
-    ss->cont = &t->cont[piece][ss->to];
+    ss->cont = &t->cont[b->checkers != 0][tactical][piece][ss->to];
+    ss->reduction = 0;
     nnue_push_move(b, m);
     make_move(b, m);
     tt_prefetch(b->hash);
@@ -736,6 +744,9 @@ static int qsearch(ThreadData *t, Stack *ss, int alpha, int beta, bool pv_node) 
     if (is_draw(t, ss)) return draw_score(t);
     bool in_check = b->checkers != 0;
     if (ply >= MAX_PLY - 1) return in_check ? 0 : adjust_eval(t, raw_eval(t), correction(t, ss));
+    alpha = alpha > mated_in(ply) ? alpha : mated_in(ply);
+    beta = beta < mate_in(ply + 1) ? beta : mate_in(ply + 1);
+    if (alpha >= beta) return alpha;
     if (alpha < 0 && upcoming_repetition(t, ss)) {
         alpha = 0;
         if (alpha >= beta) return alpha;
@@ -1213,6 +1224,10 @@ static int negamax(ThreadData *t, Stack *ss, int alpha, int beta, int depth, boo
     if (!root && bound == BOUND_UPPER && (n_quiets > 0 || depth > 3))
         update_inbound(t, ss, hist_bonus(&H_MAIN, depth));
 
+    /* A failed reply to a PV move remains relevant to later iterations. */
+    if (!root && bound == BOUND_UPPER && moves_made > 2)
+        ss->ttpv |= (ss - 1)->ttpv;
+
     if (excluded == NO_MOVE && !(root && t->root_skip_count > 0)) {
         if (raw != SCORE_NONE) {
             int fresh = adjust_eval(t, raw, correction(t, ss));
@@ -1465,6 +1480,10 @@ static void reset_thread(ThreadData *t, const Board *root, const uint64_t *histo
     memset(t->root_nodes, 0, sizeof t->root_nodes);
     memset(t->stack, 0, sizeof t->stack);
     memset(t->pv_len, 0, sizeof t->pv_len);
+    /* Root distance changes between searches; retain only a weak prior. */
+    for (int p = 0; p < LOW_PLY; p++)
+        for (int from = 0; from < 64; from++)
+            for (int to = 0; to < 64; to++) t->low_ply[p][from][to] /= 2;
     for (int i = 0; i < MAX_PLY + STACK_OFFSET + 4; i++) {
         t->stack[i].piece = -1;
         t->stack[i].static_eval = t->stack[i].eval = SCORE_NONE;
@@ -1619,6 +1638,7 @@ static void clear_thread(ThreadData *t) {
     memset(t->piece_to, 0, sizeof t->piece_to);
     memset(t->tactical, 0, sizeof t->tactical);
     memset(t->cont, 0, sizeof t->cont);
+    memset(t->low_ply, 0, sizeof t->low_ply);
     memset(t->pawn_hist, 0, sizeof t->pawn_hist);
     memset(t->corr_pawn, 0, sizeof t->corr_pawn);
     memset(t->corr_nonpawn, 0, sizeof t->corr_nonpawn);
