@@ -123,6 +123,7 @@ typedef struct {
     bool     nmp_banned[2];
     uint64_t root_nodes[64][64];
     Move     root_moves[MAX_MOVES];      /* legal root moves after searchmoves */
+    int      root_scores[MAX_MOVES];
     int      root_move_count;
     Move     root_skip[MAX_MULTIPV];     /* MultiPV: already reported moves */
     int      root_skip_count;
@@ -281,6 +282,22 @@ static inline bool root_move_allowed(const ThreadData *t, Move m) {
     for (int i = 0; i < t->root_move_count; i++)
         if (t->root_moves[i] == m) return true;
     return t->root_move_count == 0;
+}
+
+/* Preserve the previous order among fail-low moves. Their scout bounds do
+ * not establish an ordering, but earlier iterations may have done so. */
+static void sort_root_moves(ThreadData *t) {
+    for (int i = 1; i < t->root_move_count; i++) {
+        Move move = t->root_moves[i];
+        int score = t->root_scores[i], j = i;
+        while (j > 0 && score > t->root_scores[j - 1]) {
+            t->root_moves[j] = t->root_moves[j - 1];
+            t->root_scores[j] = t->root_scores[j - 1];
+            j--;
+        }
+        t->root_moves[j] = move;
+        t->root_scores[j] = score;
+    }
 }
 
 static bool searchmoves_allows(const SearchLimits *lim, Move m) {
@@ -1098,8 +1115,13 @@ static int negamax(ThreadData *t, Stack *ss, int alpha, int beta, int depth, boo
 
     Picker p;
     picker_init(&p, b, tt_move, killer, MAIN_SEE_BOUND, false);
+    int root_index = 0;
+    if (root && excluded == NO_MOVE)
+        for (int i = 0; i < t->root_move_count; i++)
+            if (root_move_allowed(t, t->root_moves[i])) t->root_scores[i] = -INFINITY_SCORE;
     Move m;
-    while ((m = picker_next(&p, t, ss)) != NO_MOVE) {
+    while ((m = root ? (root_index < t->root_move_count ? t->root_moves[root_index++] : NO_MOVE)
+                     : picker_next(&p, t, ss)) != NO_MOVE) {
         if (m == excluded) continue;
         if (!move_is_legal(b, m)) continue;
         if (root && !root_move_allowed(t, m)) continue;
@@ -1188,6 +1210,9 @@ static int negamax(ThreadData *t, Stack *ss, int alpha, int beta, int depth, boo
             t->root_nodes[from][move_to(m)] += atomic_load_explicit(&t->nodes, memory_order_relaxed) - nodes_before;
         if (stopped()) return 0;
 
+        if (root && excluded == NO_MOVE && (moves_made == 1 || score > alpha))
+            t->root_scores[root_index - 1] = score;
+
         if (score > best_score) {
             best_score = score;
             if (score > alpha) {
@@ -1238,6 +1263,7 @@ static int negamax(ThreadData *t, Stack *ss, int alpha, int beta, int depth, boo
         }
         tt_store(b->hash, ply, best_move, best_score, raw, bound, depth, ss->ttpv);
     }
+    if (root && excluded == NO_MOVE) sort_root_moves(t);
     return best_score;
 }
 
@@ -1505,6 +1531,7 @@ static void reset_thread(ThreadData *t, const Board *root, const uint64_t *histo
         for (int i = 0; i < n_legal; i++)
             t->root_moves[t->root_move_count++] = legal[i];
     t->root_skip_count = 0;
+    for (int i = 0; i < t->root_move_count; i++) t->root_scores[i] = -INFINITY_SCORE;
 }
 
 static int legal_moves(Board *b, Move *out) {
