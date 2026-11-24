@@ -631,6 +631,30 @@ static int forward_avx2(const Frame *f, const Board *b) {
     return finish_avx2(sums, bucket);
 }
 
+/* 256-bit dot products also serve CPUs without 512-bit vector support. */
+__attribute__((target("avx2,avxvnni,fma")))
+static int forward_avxvnni(const Frame *f, const Board *b) {
+    _Alignas(32) uint8_t x[WIDTH];
+    activate_avx2(f, b, x);
+    int bucket = output_bucket(b);
+    uint16_t idx[256];
+    int ng = nonzero_groups(x, idx);
+    __m256i s[4];
+    for (int j = 0; j < 4; j++) s[j] = _mm256_setzero_si256();
+    for (int gi = 0; gi < ng; gi++) {
+        int g = idx[gi];
+        uint32_t bits;
+        memcpy(&bits, x + g * 4, sizeof bits);
+        __m256i in = _mm256_set1_epi32((int)bits);
+        for (int j = 0; j < 4; j++)
+            s[j] = _mm256_dpbusd_avx_epi32(s[j], in,
+                _mm256_load_si256((const void *)(w1[bucket] + g * 128 + j * 32)));
+    }
+    _Alignas(64) int32_t sums[32];
+    for (int j = 0; j < 4; j++) _mm256_store_si256((void *)(sums + j * 8), s[j]);
+    return finish_avx2(sums, bucket);
+}
+
 __attribute__((target("avx512f,avx512bw,avx512vnni,avx2,fma")))
 static int forward_vnni(const Frame *f, const Board *b) {
     _Alignas(32) uint8_t x[WIDTH];
@@ -725,6 +749,10 @@ bool net_load(const unsigned char *bytes, size_t count) {
         aux_rows = aux_rows_avx2;
         forward = forward_avx2;
         net_tier = "avx2";
+        if (__builtin_cpu_supports("avxvnni")) {
+            forward = forward_avxvnni;
+            net_tier = "avx-vnni";
+        }
     }
     if (__builtin_cpu_supports("avx512f") && __builtin_cpu_supports("avx512bw")) {
         psqt_rows = psqt_rows_avx512;

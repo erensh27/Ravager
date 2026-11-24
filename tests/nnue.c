@@ -77,6 +77,8 @@ static void verify(Board *b) {
     assert(net_eval(b, true) == score);
     if (__builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma"))
         assert(forward_avx2(f, b) == score);
+    if (__builtin_cpu_supports("avxvnni") && __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma"))
+        assert(forward_avxvnni(f, b) == score);
     if (__builtin_cpu_supports("avx512vnni") && __builtin_cpu_supports("avx512bw") &&
         __builtin_cpu_supports("avx512f") && __builtin_cpu_supports("fma"))
         assert(forward_vnni(f, b) == score);
