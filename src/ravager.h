@@ -105,6 +105,14 @@ static inline void *rv_aligned_alloc(size_t align, size_t size) {
     return _aligned_malloc((size + align - 1) / align * align, align);
 }
 static inline void rv_aligned_free(void *p) { _aligned_free(p); }
+#elif defined(__ANDROID__)
+/* aligned_alloc arrived late in the NDK; posix_memalign is always there. */
+static inline void *rv_aligned_alloc(size_t align, size_t size) {
+    void *p = NULL;
+    if (posix_memalign(&p, align, (size + align - 1) / align * align)) return NULL;
+    return p;
+}
+static inline void rv_aligned_free(void *p) { free(p); }
 #else
 static inline void *rv_aligned_alloc(size_t align, size_t size) {
     return aligned_alloc(align, (size + align - 1) / align * align);

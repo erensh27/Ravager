@@ -15,6 +15,7 @@ static void test_rows(void) {
             for (int aux = 0; aux < 2; aux++) {
                 void (*scalar)(int16_t *, const int16_t *, const RowOps *) = aux ? aux_rows_scalar : psqt_rows_scalar;
                 scalar(expected, src, &o);
+#if defined(__x86_64__) || defined(__i386__)
                 for (int tier = 0; tier < 2; tier++) {
                     if (!__builtin_cpu_supports("avx2")) continue;
                     if (tier && !(__builtin_cpu_supports("avx512f") && __builtin_cpu_supports("avx512bw"))) continue;
@@ -27,6 +28,14 @@ static void test_rows(void) {
                     kernel(actual, actual, &o);
                     assert(!memcmp(actual, expected, sizeof actual));
                 }
+#elif defined(__aarch64__)
+                void (*kernel)(int16_t *, const int16_t *, const RowOps *) = aux ? aux_rows_neon : psqt_rows_neon;
+                kernel(actual, src, &o);
+                assert(!memcmp(actual, expected, sizeof actual));
+                memcpy(actual, src, sizeof actual);
+                kernel(actual, actual, &o);
+                assert(!memcmp(actual, expected, sizeof actual));
+#endif
             }
         }
 }
@@ -75,6 +84,7 @@ static void verify(Board *b) {
     assert(net_eval(b, false) == score);
     assert(net_eval(b, false) == score);  /* Repeated reads use the cached head. */
     assert(net_eval(b, true) == score);
+#if defined(__x86_64__) || defined(__i386__)
     if (__builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma"))
         assert(forward_avx2(f, b) == score);
     if (__builtin_cpu_supports("avxvnni") && __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma"))
@@ -82,6 +92,15 @@ static void verify(Board *b) {
     if (__builtin_cpu_supports("avx512vnni") && __builtin_cpu_supports("avx512bw") &&
         __builtin_cpu_supports("avx512f") && __builtin_cpu_supports("fma"))
         assert(forward_vnni(f, b) == score);
+#elif defined(__aarch64__)
+    assert(forward_neon(f, b) == score);
+#if defined(__ARM_FEATURE_DOTPROD)
+    assert(forward_neon_dot(f, b) == score);
+#elif defined(__linux__)
+    if (getauxval(AT_HWCAP) & HWCAP_ASIMDDP)
+        assert(forward_neon_dot(f, b) == score);
+#endif
+#endif
     checked++;
 }
 
@@ -109,7 +128,9 @@ static void visit(Board *b, int depth) {
 }
 
 static void test_groups(void) {
+#if defined(__x86_64__) || defined(__i386__)
     if (!__builtin_cpu_supports("avx2")) return;
+#endif
     _Alignas(32) uint8_t x[WIDTH];
     uint16_t idx[256];
     for (unsigned mask = 0; mask < 256; mask++) {

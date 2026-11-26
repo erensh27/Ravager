@@ -4,7 +4,7 @@
 #include "ravager.h"
 
 extern bool nnue_loaded, nnue_enabled;
-extern const char *nnue_tier;   /* inference tier in use: scalar, avx2, avx512, avx512-vnni */
+extern const char *nnue_tier;   /* inference tier in use: scalar, avx2, avx512, avx512-vnni, neon, neon-dot */
 
 bool nnue_load_file(const char *path);
 bool nnue_load_embedded(void);

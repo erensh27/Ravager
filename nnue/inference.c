@@ -23,13 +23,25 @@
 #define _GNU_SOURCE
 #include "inference.h"
 #include "bitboard.h"
+#if defined(__x86_64__) || defined(__i386__)
 #include <immintrin.h>
+#define RV_X86 1
+#elif defined(__aarch64__)
+#include <arm_neon.h>
+#define RV_NEON 1
+#endif
 #include <assert.h>
 #include <stdlib.h>
 #include <math.h>
 #include <string.h>
 #ifdef __linux__
 #include <sys/mman.h>
+#endif
+#if defined(RV_NEON) && defined(__linux__)
+#include <sys/auxv.h>
+#ifndef HWCAP_ASIMDDP
+#define HWCAP_ASIMDDP (1 << 20)
+#endif
 #endif
 
 #define WIDTH 1024
@@ -222,6 +234,7 @@ static inline void prefetch_rows(const char *base, size_t rowbytes, const RowOps
     for (int r = 0; r < o->nsub; r++) { const char *q = base + (size_t)o->sub[r] * rowbytes + off; for (size_t k = 0; k < span; k += 64) __builtin_prefetch(q + k, 0, 3); }
 }
 
+#if defined(RV_X86)
 __attribute__((target("avx2")))
 static void psqt_rows_avx2(int16_t *dst, const int16_t *src, const RowOps *o) {
     /* Ordinary moves and captures need only one added row. */
@@ -352,10 +365,73 @@ static void aux_rows_avx512(int16_t *dst, const int16_t *src, const RowOps *o) {
         for (int k = 0; k < 16; k++) _mm512_store_si512((void *)(dst + tile + k * 32), v[k]);
     }
 }
+#endif
+
+#if defined(RV_NEON)
+static void psqt_rows_neon(int16_t *dst, const int16_t *src, const RowOps *o) {
+    /* Ordinary moves and captures need only one added row. */
+    if (o->nadd == 1 && (o->nsub == 1 || o->nsub == 2)) {
+        const int16_t *add = pw + (size_t)o->add[0] * WIDTH;
+        const int16_t *sub = pw + (size_t)o->sub[0] * WIDTH;
+        if (o->nsub == 1) {
+            for (int j = 0; j < WIDTH; j += 8)
+                vst1q_s16(dst + j, vaddq_s16(vsubq_s16(vld1q_s16(src + j), vld1q_s16(sub + j)),
+                                             vld1q_s16(add + j)));
+        } else {
+            const int16_t *cap = pw + (size_t)o->sub[1] * WIDTH;
+            for (int j = 0; j < WIDTH; j += 8)
+                vst1q_s16(dst + j, vsubq_s16(vaddq_s16(vsubq_s16(vld1q_s16(src + j), vld1q_s16(sub + j)),
+                                                       vld1q_s16(add + j)),
+                                             vld1q_s16(cap + j)));
+        }
+        return;
+    }
+    prefetch_rows((const char *)pw, WIDTH * 2, o, 0, 256);
+    for (int tile = 0; tile < WIDTH; tile += 128) {
+        if (tile + 128 < WIDTH) prefetch_rows((const char *)pw, WIDTH * 2, o, (size_t)(tile + 128) * 2, 256);
+        int16x8_t v[16];
+        for (int k = 0; k < 16; k++) v[k] = vld1q_s16(src + tile + k * 8);
+        for (int r = 0; r < o->nadd; r++) {
+            const int16_t *row = pw + (size_t)o->add[r] * WIDTH + tile;
+            for (int k = 0; k < 16; k++) v[k] = vaddq_s16(v[k], vld1q_s16(row + k * 8));
+        }
+        for (int r = 0; r < o->nsub; r++) {
+            const int16_t *row = pw + (size_t)o->sub[r] * WIDTH + tile;
+            for (int k = 0; k < 16; k++) v[k] = vsubq_s16(v[k], vld1q_s16(row + k * 8));
+        }
+        for (int k = 0; k < 16; k++) vst1q_s16(dst + tile + k * 8, v[k]);
+    }
+}
+
+static void aux_rows_neon(int16_t *dst, const int16_t *src, const RowOps *o) {
+    if (!o->nadd && !o->nsub) {
+        if (dst != src) memcpy(dst, src, WIDTH * sizeof(int16_t));
+        return;
+    }
+    prefetch_rows((const char *)aw, WIDTH, o, 0, 128);
+    for (int tile = 0; tile < WIDTH; tile += 64) {
+        if (tile + 64 < WIDTH) prefetch_rows((const char *)aw, WIDTH, o, (size_t)tile + 64, 64);
+        int16x8_t v[8];
+        for (int k = 0; k < 8; k++) v[k] = vld1q_s16(src + tile + k * 8);
+        for (int r = 0; r < o->nadd; r++) {
+            const int8_t *row = aw + (size_t)o->add[r] * WIDTH + tile;
+            for (int k = 0; k < 8; k++)
+                v[k] = vaddq_s16(v[k], vmovl_s8(vld1_s8(row + k * 8)));
+        }
+        for (int r = 0; r < o->nsub; r++) {
+            const int8_t *row = aw + (size_t)o->sub[r] * WIDTH + tile;
+            for (int k = 0; k < 8; k++)
+                v[k] = vsubq_s16(v[k], vmovl_s8(vld1_s8(row + k * 8)));
+        }
+        for (int k = 0; k < 8; k++) vst1q_s16(dst + tile + k * 8, v[k]);
+    }
+}
+#endif
 
 static void (*psqt_rows)(int16_t *, const int16_t *, const RowOps *) = psqt_rows_scalar;
 static void (*aux_rows)(int16_t *, const int16_t *, const RowOps *) = aux_rows_scalar;
 
+#if defined(RV_X86)
 static uint64_t square_diff(const uint8_t *x, const uint8_t *y) {
     uint64_t m = 0;
     for (int i = 0; i < 4; i++) {
@@ -364,6 +440,30 @@ static uint64_t square_diff(const uint8_t *x, const uint8_t *y) {
     }
     return m;
 }
+#elif defined(RV_NEON)
+/* One bit per differing byte, gathered from two 8-byte groups. */
+static inline uint64_t diff_mask16(uint8x16_t e) {
+    static const uint8_t weights[16] = {1, 2, 4, 8, 16, 32, 64, 128, 1, 2, 4, 8, 16, 32, 64, 128};
+    uint16x8_t pairs = vpaddlq_u8(vandq_u8(e, vld1q_u8(weights)));
+    uint64x2_t groups = vpaddlq_u32(vpaddlq_u16(pairs));
+    return vgetq_lane_u64(groups, 0) | (vgetq_lane_u64(groups, 1) << 8);
+}
+static uint64_t square_diff(const uint8_t *x, const uint8_t *y) {
+    uint64_t m = 0;
+    for (int i = 0; i < 4; i++) {
+        uint8x16_t e = vmvnq_u8(vceqq_u8(vld1q_u8(x + i * 16), vld1q_u8(y + i * 16)));
+        m |= diff_mask16(e) << (i * 16);
+    }
+    return m;
+}
+#else
+static uint64_t square_diff(const uint8_t *x, const uint8_t *y) {
+    uint64_t m = 0;
+    for (int i = 0; i < 64; i++)
+        if (x[i] != y[i]) m |= 1ULL << i;
+    return m;
+}
+#endif
 
 /* Piece-square accumulator from scratch (verification and fresh frames). */
 static void psqt_scratch(Frame *f, int p) {
@@ -499,6 +599,7 @@ static int finish_scalar(const int32_t *s, int bucket) {
     return (int)(y * 240.0f);
 }
 
+#if defined(RV_X86)
 /* Eight-lane float head; the FMA order matches finish_scalar exactly. */
 __attribute__((target("avx2,fma")))
 static int finish_avx2(const int32_t *s, int bucket) {
@@ -531,6 +632,39 @@ static int finish_avx2(const int32_t *s, int bucket) {
     t = _mm_add_ss(t, _mm_shuffle_ps(t, t, 1));
     return (int)((_mm_cvtss_f32(t) + b3[bucket]) * 240.0f);
 }
+#endif
+
+#if defined(RV_NEON)
+/* Four-lane float head; the FMA order matches finish_scalar exactly. */
+static int finish_neon(const int32_t *s, int bucket) {
+    _Alignas(16) float x[32], h[32];
+    const float32x4_t zero = vdupq_n_f32(0.0f), three = vdupq_n_f32(3.0f), six = vdupq_n_f32(6.0f),
+                      inv = vdupq_n_f32(1.0f / 6.0f), scale = vdupq_n_f32(512.0f / (255.0f * 255.0f * 64.0f));
+    for (int j = 0; j < 8; j++) {
+        float32x4_t v = vfmaq_f32(vld1q_f32(b1[bucket] + j * 4), vcvtq_f32_s32(vld1q_s32(s + j * 4)), scale);
+        float32x4_t g = vminq_f32(vmaxq_f32(vaddq_f32(v, three), zero), six);
+        vst1q_f32(x + j * 4, vmulq_f32(vmulq_f32(v, g), inv));
+    }
+    float32x4_t z[16];
+    for (int j = 0; j < 16; j++) z[j] = vld1q_f32(b2[bucket] + j * 4);
+    for (int i = 0; i < 32; i++) {
+        float32x4_t v = vdupq_n_f32(x[i]);
+        for (int j = 0; j < 16; j++) z[j] = vfmaq_f32(z[j], v, vld1q_f32(w2[bucket][i] + j * 4));
+    }
+    for (int j = 0; j < 8; j++) {
+        float32x4_t g = vminq_f32(vmaxq_f32(vaddq_f32(z[j], three), zero), six);
+        float32x4_t sw = vmulq_f32(vmulq_f32(z[j], g), inv);
+        vst1q_f32(h + j * 4, vaddq_f32(vmulq_f32(sw, z[j + 8]), vld1q_f32(x + j * 4)));
+    }
+    float sum[16] = {0};
+    for (int i = 0; i < 32; i++) sum[i % 16] = fmaf(h[i], w3[bucket][i], sum[i % 16]);
+    float t[8], u[4];
+    for (int i = 0; i < 8; i++) t[i] = sum[i] + sum[i + 8];
+    for (int i = 0; i < 4; i++) u[i] = t[i] + t[i + 4];
+    float y = ((u[0] + u[2]) + (u[1] + u[3])) + b3[bucket];
+    return (int)(y * 240.0f);
+}
+#endif
 
 static inline int output_bucket(const Board *b) { return (popcount(b->occ_all) - 2) / 4; }
 
@@ -546,6 +680,7 @@ static void activate_scalar(const Frame *f, const Board *b, uint8_t *x) {
     }
 }
 
+#if defined(RV_X86)
 __attribute__((target("avx2")))
 static void activate_avx2(const Frame *f, const Board *b, uint8_t *x) {
     const __m256i zero = _mm256_setzero_si256(), cap = _mm256_set1_epi16(255);
@@ -567,6 +702,36 @@ static void activate_avx2(const Frame *f, const Board *b, uint8_t *x) {
         }
     }
 }
+#endif
+
+#if defined(RV_NEON)
+/* Bits 16..31 of each 32-bit product, matching the x86 mulhi kernel. */
+static inline int16x8_t mulhi_s16(int16x8_t a, int16x8_t b) {
+    int32x4_t lo = vmull_s16(vget_low_s16(a), vget_low_s16(b));
+    int32x4_t hi = vmull_s16(vget_high_s16(a), vget_high_s16(b));
+    return vcombine_s16(vshrn_n_s32(lo, 16), vshrn_n_s32(hi, 16));
+}
+static void activate_neon(const Frame *f, const Board *b, uint8_t *x) {
+    const int16x8_t zero = vdupq_n_s16(0), cap = vdupq_n_s16(255);
+    for (int p = 0; p < 2; p++) {
+        int side = b->side ^ p;
+        const int16_t *ps = f->psqt[side], *th = f->thr[side];
+        for (int i = 0; i < HALF; i += 16) {
+            int16x8_t l0 = vaddq_s16(vld1q_s16(ps + i), vld1q_s16(th + i));
+            int16x8_t l1 = vaddq_s16(vld1q_s16(ps + i + 8), vld1q_s16(th + i + 8));
+            int16x8_t r0 = vaddq_s16(vld1q_s16(ps + i + HALF), vld1q_s16(th + i + HALF));
+            int16x8_t r1 = vaddq_s16(vld1q_s16(ps + i + HALF + 8), vld1q_s16(th + i + HALF + 8));
+            l0 = vshlq_n_s16(vminq_s16(vmaxq_s16(l0, zero), cap), 7);
+            l1 = vshlq_n_s16(vminq_s16(vmaxq_s16(l1, zero), cap), 7);
+            r0 = vminq_s16(r0, cap);
+            r1 = vminq_s16(r1, cap);
+            /* (l << 7) * r >> 16 == l * r >> 9; negative right-hand values narrow to zero. */
+            int16x8_t q0 = mulhi_s16(l0, r0), q1 = mulhi_s16(l1, r1);
+            vst1q_u8(x + p * HALF + i, vcombine_u8(vqmovun_s16(q0), vqmovun_s16(q1)));
+        }
+    }
+}
+#endif
 
 static int forward_scalar(const Frame *f, const Board *b) {
     uint8_t x[WIDTH];
@@ -578,6 +743,7 @@ static int forward_scalar(const Frame *f, const Board *b) {
     return finish_scalar(s, bucket);
 }
 
+#if defined(RV_X86)
 /* Indices of the 4-byte input groups with any nonzero byte, ascending. */
 __attribute__((target("avx2")))
 static inline int nonzero_groups(const uint8_t *x, uint16_t *idx) {
@@ -676,6 +842,97 @@ static int forward_vnni(const Frame *f, const Board *b) {
     _mm512_store_si512(sums + 16, hi);
     return finish_avx2(sums, bucket);
 }
+#endif
+
+#if defined(RV_NEON)
+/* Indices of the 4-byte input groups with any nonzero byte, ascending. */
+static inline int nonzero_groups(const uint8_t *x, uint16_t *idx) {
+    const uint32x4_t zero = vdupq_n_u32(0);
+    static const uint8_t weights[8] = {1, 2, 4, 8, 16, 32, 64, 128};
+    uint8x8_t w = vld1_u8(weights);
+    int n = 0;
+    for (int c = 0; c < 32; c++) {
+        uint32x4_t e0 = vceqq_u32(vld1q_u32((const uint32_t *)(x + c * 32)), zero);
+        uint32x4_t e1 = vceqq_u32(vld1q_u32((const uint32_t *)(x + c * 32 + 16)), zero);
+        uint16x8_t m16 = vcombine_u16(vmovn_u32(e0), vmovn_u32(e1));
+        unsigned z = vaddv_u8(vand_u8(vmovn_u16(m16), w));
+        unsigned nz = ~z & 0xffu;
+        uint16x8_t offsets = vld1q_u16(group_indices[nz]);
+        vst1q_u16(idx + n, vaddq_u16(offsets, vdupq_n_u16((uint16_t)(c * 8))));
+        n += __builtin_popcount(nz);
+    }
+    return n;
+}
+
+/* Exact int16 pairwise products widened to int32: activated inputs stay at or
+ * below 127, so no intermediate can saturate. */
+static int forward_neon(const Frame *f, const Board *b) {
+    _Alignas(16) uint8_t x[WIDTH];
+    activate_neon(f, b, x);
+    int bucket = output_bucket(b);
+    uint16_t idx[256];
+    int ng = nonzero_groups(x, idx);
+    int32x4_t acc[4][2][2];   /* [weight tile][16-byte half][neuron pair] */
+    for (int j = 0; j < 4; j++)
+        for (int h = 0; h < 2; h++)
+            for (int q = 0; q < 2; q++) acc[j][h][q] = vdupq_n_s32(0);
+    for (int gi = 0; gi < ng; gi++) {
+        int g = idx[gi];
+        uint32_t bits;
+        memcpy(&bits, x + g * 4, 4);
+        uint8x16_t in = vreinterpretq_u8_u32(vdupq_n_u32(bits));
+        int16x8_t xlo = vreinterpretq_s16_u16(vmovl_u8(vget_low_u8(in)));
+        int16x8_t xhi = vreinterpretq_s16_u16(vmovl_u8(vget_high_u8(in)));
+        for (int j = 0; j < 4; j++) {
+            const int8_t *row = w1[bucket] + g * 128 + j * 32;
+            for (int h = 0; h < 2; h++) {
+                int8x16_t w = vld1q_s8(row + h * 16);
+                int16x8_t wlo = vmovl_s8(vget_low_s8(w));
+                int16x8_t whi = vmovl_s8(vget_high_s8(w));
+                acc[j][h][0] = vaddq_s32(acc[j][h][0], vpaddlq_s16(vmulq_s16(xlo, wlo)));
+                acc[j][h][1] = vaddq_s32(acc[j][h][1], vpaddlq_s16(vmulq_s16(xhi, whi)));
+            }
+        }
+    }
+    _Alignas(16) int32_t sums[32];
+    for (int j = 0; j < 4; j++)
+        for (int h = 0; h < 2; h++)
+            for (int q = 0; q < 2; q++) {
+                int32_t lanes[4];
+                vst1q_s32(lanes, acc[j][h][q]);
+                sums[j * 8 + h * 4 + q * 2]     = lanes[0] + lanes[1];
+                sums[j * 8 + h * 4 + q * 2 + 1] = lanes[2] + lanes[3];
+            }
+    return finish_neon(sums, bucket);
+}
+
+/* Widening dot-product instructions fold four byte products straight into the
+ * int32 lanes; selected at runtime when the CPU reports ASIMDDP support. */
+__attribute__((target("arch=armv8.2-a+dotprod")))
+static int forward_neon_dot(const Frame *f, const Board *b) {
+    _Alignas(16) uint8_t x[WIDTH];
+    activate_neon(f, b, x);
+    int bucket = output_bucket(b);
+    uint16_t idx[256];
+    int ng = nonzero_groups(x, idx);
+    int32x4_t s[8];
+    for (int j = 0; j < 8; j++) s[j] = vdupq_n_s32(0);
+    for (int gi = 0; gi < ng; gi++) {
+        int g = idx[gi];
+        uint32_t bits;
+        memcpy(&bits, x + g * 4, 4);
+        uint8x16_t in = vreinterpretq_u8_u32(vdupq_n_u32(bits));
+        for (int j = 0; j < 4; j++) {
+            const int8_t *row = w1[bucket] + g * 128 + j * 32;
+            s[j * 2]     = vdotq_s32(s[j * 2], in, vld1q_s8(row));
+            s[j * 2 + 1] = vdotq_s32(s[j * 2 + 1], in, vld1q_s8(row + 16));
+        }
+    }
+    _Alignas(16) int32_t sums[32];
+    for (int j = 0; j < 8; j++) vst1q_s32(sums + j * 4, s[j]);
+    return finish_neon(sums, bucket);
+}
+#endif
 
 static int (*forward)(const Frame *, const Board *) = forward_scalar;
 
@@ -744,6 +1001,7 @@ bool net_load(const unsigned char *bytes, size_t count) {
     aux_rows = aux_rows_scalar;
     forward = forward_scalar;
     net_tier = "scalar";
+#if defined(RV_X86)
     if (__builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma")) {
         psqt_rows = psqt_rows_avx2;
         aux_rows = aux_rows_avx2;
@@ -760,6 +1018,21 @@ bool net_load(const unsigned char *bytes, size_t count) {
         net_tier = "avx512";
         if (__builtin_cpu_supports("avx512vnni")) { forward = forward_vnni; net_tier = "avx512-vnni"; }
     }
+#elif defined(RV_NEON)
+    psqt_rows = psqt_rows_neon;
+    aux_rows = aux_rows_neon;
+    forward = forward_neon;
+    net_tier = "neon";
+#if defined(__ARM_FEATURE_DOTPROD)
+    forward = forward_neon_dot;
+    net_tier = "neon-dot";
+#elif defined(__linux__)
+    if (getauxval(AT_HWCAP) & HWCAP_ASIMDDP) {
+        forward = forward_neon_dot;
+        net_tier = "neon-dot";
+    }
+#endif
+#endif
     network_generation++;
     for (int i = 0; i < FRAMES; i++) { frames[i].ready = false; frame_source[i] = i; }
     return true;
