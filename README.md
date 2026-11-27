@@ -27,10 +27,10 @@ The network is embedded into the binary at compile time (`EVALFILE`, default `ne
 
 | List | Rating | Rank | Version | Notes |
 | ---- | ------ | ---- | ------- | ----- |
-| [CCRL 40/15](https://computerchess.org.uk/4040/cgi/engine_details.cgi?print=Details&each_game=0&eng=Ravager%203.0%2064-bit#Ravager_3_0_64-bit) | 3601 | - | 3 | 1 CPU |
-| [CCRL 2+1 Blitz](https://computerchess.org.uk/404/cgi/engine_details.cgi?print=Details&each_game=1&eng=Ravager%203%2064-bit#Ravager_3_64-bit) | 3734 | #21 | 3 | 1 CPU |
+| [CCRL 40/15](https://computerchess.org.uk/4040/cgi/engine_details.cgi?print=Details&each_game=0&eng=Ravager%203.0%2064-bit#Ravager_3_0_64-bit) | 3593 | #21 | 3 | 1 CPU |
+| [CCRL 2+1 Blitz](https://computerchess.org.uk/404/cgi/engine_details.cgi?print=Details&each_game=1&eng=Ravager%203%2064-bit#Ravager_3_64-bit) | 3734 | #19 | 3 | 1 CPU |
 | [CCRL 40/2 FRC](https://computerchess.org.uk/404FRC/cgi/engine_details.cgi?print=Details&each_game=1&eng=Ravager%203#Ravager_3) | 4039 | #14 | 3 | Fischer Random Chess |
-| [IPMAN](https://ipmanchess.yolasite.com/r9-7945hx-ai-engines.php) | 3555 | #8 | 3 | AMD R9 7945HX |
+| [IPMAN](https://ipmanchess.yolasite.com/r9-7945hx-ai-engines.php) | 3557 | #9 | 3 | AMD R9 7945HX |
 
 ## Search
 
